@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -33,7 +33,7 @@ def load_settings() -> Any:
     return get_settings()
 
 
-def settings_to_dict(settings: Any) -> dict[str, Any]:
+def settings_to_dict(settings: Any) -> Dict[str, Any]:
     return dict(settings.model_dump())
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,10 +9,10 @@ from database.models import SupportTopic
 
 
 def _build_full_name(
-    full_name: str | None,
-    first_name: str | None,
-    last_name: str | None,
-) -> str | None:
+    full_name: Optional[str],
+    first_name: Optional[str],
+    last_name: Optional[str],
+) -> Optional[str]:
     if full_name:
         return full_name
 
@@ -35,7 +37,7 @@ async def advisory_xact_lock_user(session: AsyncSession, user_id: int) -> None:
 async def get_by_user_id(
     session: AsyncSession,
     user_id: int,
-) -> SupportTopic | None:
+) -> Optional[SupportTopic]:
     result = await session.execute(
         select(SupportTopic).where(SupportTopic.user_id == user_id)
     )
@@ -45,7 +47,7 @@ async def get_by_user_id(
 async def get_by_topic_id(
     session: AsyncSession,
     topic_id: int,
-) -> SupportTopic | None:
+) -> Optional[SupportTopic]:
     result = await session.execute(
         select(SupportTopic).where(SupportTopic.topic_id == topic_id)
     )
@@ -57,10 +59,10 @@ async def create_support_topic(
     *,
     user_id: int,
     topic_id: int,
-    username: str | None = None,
-    full_name: str | None = None,
-    first_name: str | None = None,
-    last_name: str | None = None,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
     status: str = "open",
 ) -> SupportTopic:
     topic = SupportTopic(
@@ -81,12 +83,12 @@ async def get_or_create_support_topic(
     *,
     user_id: int,
     topic_id: int,
-    username: str | None = None,
-    full_name: str | None = None,
-    first_name: str | None = None,
-    last_name: str | None = None,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
     status: str = "open",
-) -> tuple[SupportTopic, bool]:
+) -> Tuple[SupportTopic, bool]:
     await advisory_xact_lock_user(session, user_id)
 
     topic = await get_by_user_id(session, user_id)
@@ -110,9 +112,9 @@ async def update_support_topic(
     session: AsyncSession,
     topic: SupportTopic,
     *,
-    username: str | None = None,
-    full_name: str | None = None,
-    status: str | None = None,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> SupportTopic:
     if username is not None:
         topic.username = username
@@ -131,7 +133,7 @@ async def set_support_topic_status(
     *,
     user_id: int,
     status: str,
-) -> SupportTopic | None:
+) -> Optional[SupportTopic]:
     topic = await get_by_user_id(session, user_id)
     if topic is None:
         return None

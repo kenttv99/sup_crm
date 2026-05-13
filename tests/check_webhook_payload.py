@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any
+from typing import Any, Dict, Optional
 
 from _common import load_settings
 
@@ -10,7 +10,7 @@ APP_MODULES = ("main", "app.main", "bot.main", "web.main")
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
 
-def load_app() -> Any | None:
+def load_app() -> Optional[Any]:
     for module_name in APP_MODULES:
         try:
             module = importlib.import_module(module_name)
@@ -30,7 +30,7 @@ def webhook_path(app: Any) -> str:
     raise RuntimeError("Webhook route is not registered")
 
 
-def minimal_update() -> dict[str, Any]:
+def minimal_update() -> Dict[str, Any]:
     return {
         "update_id": 100000001,
         "edited_message": {

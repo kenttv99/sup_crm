@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import sys
+from typing import Dict, Optional
 
 import uvicorn
 from aiogram.exceptions import TelegramUnauthorizedError
@@ -62,15 +63,15 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post(settings.webhook_path)
 async def telegram_webhook(
     request: Request,
-    x_telegram_bot_api_secret_token: str | None = Header(default=None),
-) -> dict[str, bool]:
+    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
+) -> Dict[str, bool]:
     if x_telegram_bot_api_secret_token != settings.webhook_secret_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook secret")
 

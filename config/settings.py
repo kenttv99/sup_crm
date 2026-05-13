@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import FrozenSet
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -64,7 +65,7 @@ class Settings(BaseSettings):
         return f"{self.webhook_base_url}{self.webhook_path}"
 
     @property
-    def admin_ids(self) -> frozenset[int]:
+    def admin_ids(self) -> FrozenSet[int]:
         if not self.admin_ids_csv:
             return frozenset()
         return frozenset(

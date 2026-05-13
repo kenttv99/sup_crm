@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from importlib import import_module
 from inspect import Parameter, isawaitable, signature
+from typing import Optional
 
 from aiogram import Bot
 from aiogram.types import Message
@@ -57,7 +58,7 @@ async def get_or_create_support_topic(
     )
 
 
-async def get_by_topic_id(session: object, topic_id: int) -> object | None:
+async def get_by_topic_id(session: object, topic_id: int) -> Optional[object]:
     return await _repositories().get_by_topic_id(session, topic_id)
 
 
