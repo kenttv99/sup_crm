@@ -45,6 +45,8 @@ Build a Telegram support bot that receives user messages, keeps a CRM-facing sup
 - Deleted Telegram topic: create a replacement topic with an open title, update the stored `topic_id`, set `status=open`, send and pin one new information header.
 - Closing can be done from the inline topic button or with `/end` inside the topic; both paths are idempotent, update the database status, and rename the topic to the closed title.
 - `/all_end` is an operator command sent inside the support forum. It closes every currently open appeal, renames affected topics to the closed title, reports the number of closed rows and renamed topics, and requires the same operator authorization as `/end`.
+- Private user command `/end` closes the user's current appeal, removes the command message when Telegram allows it, and sends a final bot message with a `Переоткрыть обращение` inline button.
+- The same final user message is sent when an operator closes an appeal from the support topic. Pressing `Переоткрыть обращение` opens a new appeal and creates or refreshes the support topic header.
 
 ## Database
 

@@ -1,27 +1,58 @@
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services.topics import (
     close_all_support_topics,
     close_support_topic,
+    close_support_topic_by_user,
     get_by_topic_id,
     get_or_create_support_topic,
     is_close_ticket_callback,
     open_database_session,
     recreate_support_topic,
+    reopen_support_topic_by_user,
     topic_id_from_close_callback,
 )
 from config.settings import Settings
 
 router = Router(name="support")
 TICKET_CLOSED_MESSAGE = "Обращение закрыто. Следующее сообщение пользователя откроет новое обращение."
+USER_TICKET_CLOSED_MESSAGE = "Обращение закрыто. При необходимости переоткройте его кнопкой ниже."
+USER_TICKET_REOPENED_MESSAGE = "Обращение открыто. Напишите сообщение, оператор ответит здесь."
+REOPEN_TICKET_CALLBACK_DATA = "reopen_ticket"
 
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(message: Message) -> None:
     await message.answer("Напишите сообщение, оператор ответит здесь.")
+
+
+@router.message(F.chat.type == "private", Command("end"))
+async def close_private_support_topic_command(message: Message, bot: Bot, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.is_bot:
+        return
+
+    await delete_message_safely(bot, message)
+    async with open_database_session() as session:
+        topic, changed = await close_support_topic_by_user(
+            session,
+            bot,
+            settings.support_chat_id,
+            message.from_user.id,
+        )
+
+    if topic is None:
+        await send_user_ticket_closed_message(
+            bot,
+            message.from_user.id,
+            "Активное обращение не найдено. При необходимости откройте новое обращение.",
+        )
+        return
+
+    text = USER_TICKET_CLOSED_MESSAGE if changed else "Обращение уже закрыто. При необходимости переоткройте его кнопкой ниже."
+    await send_user_ticket_closed_message(bot, message.from_user.id, text)
 
 
 @router.message(F.chat.type == "private")
@@ -57,7 +88,7 @@ async def close_support_topic_callback(
         return
 
     topic_id = topic_id_from_close_callback(callback.data or "")
-    found, changed = await close_topic(topic_id, bot, settings)
+    found, changed, user_id = await close_topic(topic_id, bot, settings)
     if not found:
         await callback.answer("Topic не найден в базе.", show_alert=True)
         return
@@ -67,6 +98,40 @@ async def close_support_topic_callback(
 
     await callback.answer("Обращение закрыто.")
     await send_topic_status_message(bot, settings, topic_id, TICKET_CLOSED_MESSAGE)
+    if user_id is not None:
+        await send_user_ticket_closed_message(bot, user_id)
+
+
+@router.callback_query(lambda callback: callback.data == REOPEN_TICKET_CALLBACK_DATA)
+async def reopen_private_support_topic_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    if callback.from_user.is_bot:
+        await callback.answer()
+        return
+    if not isinstance(callback.message, Message) or callback.message.chat.type != "private":
+        await callback.answer("Кнопка доступна только в диалоге с ботом.", show_alert=True)
+        return
+
+    async with open_database_session() as session:
+        _, reopened = await reopen_support_topic_by_user(
+            session,
+            bot,
+            settings.support_chat_id,
+            callback.from_user.id,
+            callback.from_user.username,
+            callback.from_user.full_name,
+        )
+
+    if not reopened:
+        await callback.answer("Обращение уже открыто.")
+        return
+
+    await callback.answer("Обращение открыто.")
+    await remove_inline_keyboard(callback.message)
+    await callback.message.answer(USER_TICKET_REOPENED_MESSAGE)
 
 
 @router.message(F.chat.id, Command("end"))
@@ -80,7 +145,7 @@ async def close_support_topic_command(message: Message, bot: Bot, settings: Sett
         await message.answer("Нет прав на закрытие обращения.")
         return
 
-    found, changed = await close_topic(message.message_thread_id, bot, settings)
+    found, changed, user_id = await close_topic(message.message_thread_id, bot, settings)
     if not found:
         await message.answer("Topic не найден в базе.")
         return
@@ -89,6 +154,8 @@ async def close_support_topic_command(message: Message, bot: Bot, settings: Sett
         return
 
     await send_topic_status_message(bot, settings, message.message_thread_id, TICKET_CLOSED_MESSAGE)
+    if user_id is not None:
+        await send_user_ticket_closed_message(bot, user_id)
 
 
 @router.message(F.chat.id, Command("all_end"))
@@ -103,12 +170,14 @@ async def close_all_support_topics_command(message: Message, bot: Bot, settings:
         return
 
     async with open_database_session() as session:
-        closed_count, renamed_count = await close_all_support_topics(
+        closed_count, renamed_count, user_ids = await close_all_support_topics(
             session,
             bot,
             settings.support_chat_id,
         )
     await message.answer(f"Закрыто обращений: {closed_count}. Переименовано topic: {renamed_count}.")
+    for user_id in user_ids:
+        await send_user_ticket_closed_message(bot, user_id)
 
 
 @router.message(F.chat.id)
@@ -236,10 +305,10 @@ async def close_topic(topic_id: int, bot: Bot, settings: Settings) -> tuple:
     async with open_database_session() as session:
         topic = await get_by_topic_id(session, topic_id)
         if topic is None:
-            return False, False
+            return False, False, None
         was_open = is_open_topic(topic)
-        await close_support_topic(session, bot, settings.support_chat_id, topic_id)
-    return True, was_open
+        topic = await close_support_topic(session, bot, settings.support_chat_id, topic_id)
+    return True, was_open, get_user_id(topic) if topic is not None else None
 
 
 async def send_topic_status_message(
@@ -256,6 +325,48 @@ async def send_topic_status_message(
         )
     except TelegramBadRequest as exc:
         print(f"Cannot send topic status message to topic_id {topic_id}: {exc}")
+
+
+async def send_user_ticket_closed_message(
+    bot: Bot,
+    user_id: int,
+    text: str = USER_TICKET_CLOSED_MESSAGE,
+) -> None:
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=text,
+            reply_markup=reopen_ticket_keyboard(),
+        )
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        print(f"Cannot send ticket closed message to user_id {user_id}: {exc}")
+
+
+def reopen_ticket_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Переоткрыть обращение",
+                    callback_data=REOPEN_TICKET_CALLBACK_DATA,
+                )
+            ]
+        ]
+    )
+
+
+async def delete_message_safely(bot: Bot, message: Message) -> None:
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        print(f"Cannot delete command message {message.message_id}: {exc}")
+
+
+async def remove_inline_keyboard(message: Message) -> None:
+    try:
+        await message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest as exc:
+        print(f"Cannot remove reopen keyboard from message {message.message_id}: {exc}")
 
 
 def is_message_thread_not_found(exc: TelegramBadRequest) -> bool:
