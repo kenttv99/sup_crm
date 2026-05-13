@@ -1,0 +1,9 @@
+aiogram
+SQLAlchemy
+alembic
+redis
+fastapi
+uvicorn
+psycopg[binary]
+pydantic-settings
+httpx
