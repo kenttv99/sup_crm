@@ -3,11 +3,11 @@ import sys
 from typing import Dict, Optional
 
 import uvicorn
-from aiogram.exceptions import TelegramUnauthorizedError
+from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 from aiogram.types import Update
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
-from bot.errors import SupportChatConfigError
+from bot.errors import SupportChatConfigError, SupportTopicLifecycleError
 from bot.factory import create_bot, create_dispatcher
 from bot.services.topics import validate_support_chat
 from config.settings import get_settings
@@ -81,8 +81,11 @@ async def telegram_webhook(
     update = Update.model_validate(await request.json(), context={"bot": bot})
     try:
         await dispatcher.feed_webhook_update(bot, update)
-    except SupportChatConfigError as exc:
-        print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
+    except (SupportChatConfigError, SupportTopicLifecycleError) as exc:
+        print(f"Webhook domain error: {exc}", file=sys.stderr)
+        return {"ok": False}
+    except TelegramBadRequest as exc:
+        print(f"Webhook Telegram bad request: {exc}", file=sys.stderr)
         return {"ok": False}
     return {"ok": True}
 

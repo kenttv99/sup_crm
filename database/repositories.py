@@ -128,6 +128,43 @@ async def update_support_topic(
     return topic
 
 
+async def update_topic_id(
+    session: AsyncSession,
+    topic: SupportTopic,
+    topic_id: int,
+) -> SupportTopic:
+    topic.topic_id = topic_id
+    topic.status = "open"
+
+    await session.flush()
+    await session.refresh(topic)
+    return topic
+
+
+async def touch_support_topic(
+    session: AsyncSession,
+    topic: SupportTopic,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    status: Optional[str] = None,
+) -> SupportTopic:
+    if username is not None:
+        topic.username = username
+
+    built_full_name = _build_full_name(full_name, first_name, last_name)
+    if built_full_name is not None:
+        topic.full_name = built_full_name
+
+    if status is not None:
+        topic.status = status
+
+    await session.flush()
+    await session.refresh(topic)
+    return topic
+
+
 async def set_support_topic_status(
     session: AsyncSession,
     *,
