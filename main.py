@@ -7,7 +7,9 @@ from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.types import Update
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
+from bot.errors import SupportChatConfigError
 from bot.factory import create_bot, create_dispatcher
+from bot.services.topics import validate_support_chat
 from config.settings import get_settings
 
 
@@ -35,6 +37,7 @@ def ensure_telegram_webhook_configured() -> None:
 async def lifespan(app: FastAPI):
     try:
         ensure_telegram_webhook_configured()
+        await validate_support_chat(bot, settings.support_chat_id)
         await bot.set_webhook(
             url=settings.webhook_url,
             secret_token=settings.webhook_secret_token,
@@ -42,6 +45,10 @@ async def lifespan(app: FastAPI):
         )
     except WebhookStartupError as exc:
         print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
+        await bot.session.close()
+        raise WebhookStartupError(str(exc)) from None
+    except SupportChatConfigError as exc:
+        print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
         await bot.session.close()
         raise WebhookStartupError(str(exc)) from None
     except TelegramUnauthorizedError:
@@ -72,7 +79,11 @@ async def telegram_webhook(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook secret")
 
     update = Update.model_validate(await request.json(), context={"bot": bot})
-    await dispatcher.feed_webhook_update(bot, update)
+    try:
+        await dispatcher.feed_webhook_update(bot, update)
+    except SupportChatConfigError as exc:
+        print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
+        return {"ok": False}
     return {"ok": True}
 
 

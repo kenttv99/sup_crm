@@ -5,8 +5,10 @@ from inspect import Parameter, isawaitable, signature
 from typing import Optional
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import Message
 
+from bot.errors import SupportChatConfigError
 from database import config as database_config
 
 
@@ -43,10 +45,22 @@ async def get_or_create_support_topic(
     if topic is not None:
         return topic
 
-    forum_topic = await bot.create_forum_topic(
-        chat_id=support_chat_id,
-        name=_topic_name(message),
-    )
+    try:
+        forum_topic = await bot.create_forum_topic(
+            chat_id=support_chat_id,
+            name=_topic_name(message),
+        )
+    except TelegramBadRequest as exc:
+        if "not enough rights" in str(exc).lower():
+            raise SupportChatConfigError(
+                "Bot cannot create forum topics. Grant the bot admin permission "
+                "'Manage Topics' in the support supergroup."
+            ) from exc
+        raise SupportChatConfigError(
+            "Cannot create Telegram forum topic. Check SUPPORT_CHAT_ID: "
+            "it must be the id of a supergroup with topics enabled, "
+            "usually in -100... format."
+        ) from exc
     return await _call_create_support_topic(
         repository,
         session=session,
@@ -97,3 +111,42 @@ def _topic_name(message: Message) -> str:
 
 def _repositories() -> object:
     return import_module("database.repositories")
+
+
+async def validate_support_chat(bot: Bot, support_chat_id: int) -> None:
+    try:
+        chat = await bot.get_chat(support_chat_id)
+    except TelegramBadRequest as exc:
+        raise SupportChatConfigError(
+            "Cannot access SUPPORT_CHAT_ID. Check that the id is correct "
+            "and usually starts with -100 for a supergroup."
+        ) from exc
+    except TelegramForbiddenError as exc:
+        raise SupportChatConfigError(
+            "Bot has no access to SUPPORT_CHAT_ID. Add the bot to the support chat "
+            "and grant admin permissions."
+        ) from exc
+
+    chat_type = str(chat.type)
+    is_forum = bool(getattr(chat, "is_forum", False))
+    if chat_type != "supergroup" or not is_forum:
+        title = getattr(chat, "title", "")
+        raise SupportChatConfigError(
+            "SUPPORT_CHAT_ID does not point to a forum supergroup. "
+            f"Resolved chat: id={chat.id}, type={chat_type}, is_forum={is_forum}, title={title!r}."
+        )
+
+    bot_user = await bot.get_me()
+    member = await bot.get_chat_member(support_chat_id, bot_user.id)
+    member_status = str(member.status)
+    if member_status not in {"administrator", "creator"}:
+        raise SupportChatConfigError(
+            "Bot is not an administrator in SUPPORT_CHAT_ID. "
+            "Promote the bot to administrator and grant 'Manage Topics'."
+        )
+
+    if member_status == "administrator" and not bool(getattr(member, "can_manage_topics", False)):
+        raise SupportChatConfigError(
+            "Bot is administrator, but lacks 'Manage Topics'. "
+            "Enable this permission in the support supergroup admin settings."
+        )

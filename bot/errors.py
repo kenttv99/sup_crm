@@ -1,0 +1,2 @@
+class SupportChatConfigError(RuntimeError):
+    pass

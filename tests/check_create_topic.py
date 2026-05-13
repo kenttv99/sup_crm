@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 
 from _common import load_settings
 
@@ -18,7 +19,11 @@ async def check() -> int:
 
     bot = Bot(token=settings.bot_token)
     try:
-        topic = await bot.create_forum_topic(chat_id=settings.support_chat_id, name=title)
+        try:
+            topic = await bot.create_forum_topic(chat_id=settings.support_chat_id, name=title)
+        except TelegramBadRequest as exc:
+            print(f"create_forum_topic: failed: {exc}")
+            return 1
         print(f"title: {title}")
         print(f"message_thread_id: {topic.message_thread_id}")
         return 0
