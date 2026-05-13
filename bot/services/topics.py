@@ -581,7 +581,8 @@ def _is_not_enough_rights(exc: BaseException) -> bool:
 
 
 def _is_not_modified(exc: BaseException) -> bool:
-    return "not modified" in _error_text(exc)
+    text = _error_text(exc)
+    return "not modified" in text or "topic_not_modified" in text
 
 
 def _error_text(exc: BaseException) -> str:
