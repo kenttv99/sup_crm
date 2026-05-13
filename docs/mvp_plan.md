@@ -31,6 +31,16 @@ Build a Telegram support bot that receives user messages, keeps a CRM-facing sup
 - Repeated user messages reuse the existing topic.
 - Topic metadata should include Telegram user id, topic/message thread id, creation timestamp, and status.
 
+## Topic Lifecycle Contract
+
+- `status=open`: active appeal. The information header for the current appeal must already exist, so repeated user messages only get copied to the topic.
+- `status=closed`: closed appeal. Operator messages from that topic are ignored by the relay.
+- New database row: create Telegram topic, send one information header, pin it, then store `status=open`.
+- Existing row with `status=closed`: treat the next private user message as a new appeal in the existing topic, switch status to `open`, send one new information header, unpin previous topic pins, and pin the new header.
+- Existing row with `status=open`: do not send or pin a new information header.
+- Deleted Telegram topic: create a replacement topic, update the stored `topic_id`, set `status=open`, send and pin one new information header.
+- Closing can be done from the inline topic button or with `/end` inside the topic; both paths are idempotent and update the database status.
+
 ## Database
 
 - Database name: `sup_crm`.

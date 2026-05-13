@@ -51,6 +51,8 @@ async def create_temp_topic(bot: Bot, support_chat_id: int) -> int:
 async def check() -> int:
     args = parse_args()
     settings = load_settings()
+    from bot.services.topics import topic_close_keyboard
+
     if "replace_with" in settings.bot_token or settings.support_chat_id == 0:
         print("Replace BOT_TOKEN and SUPPORT_CHAT_ID in .env before calling Telegram.")
         return 1
@@ -74,6 +76,7 @@ async def check() -> int:
                 chat_id=settings.support_chat_id,
                 message_thread_id=topic_id,
                 text=text,
+                reply_markup=topic_close_keyboard(topic_id),
             )
             print(f"info_message_id: {message.message_id}")
 

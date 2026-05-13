@@ -1,17 +1,21 @@
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.filters import Command, CommandStart
+from aiogram.types import CallbackQuery, Message
 
 from bot.services.topics import (
+    close_support_topic,
     get_by_topic_id,
     get_or_create_support_topic,
+    is_close_ticket_callback,
     open_database_session,
     recreate_support_topic,
+    topic_id_from_close_callback,
 )
 from config.settings import Settings
 
 router = Router(name="support")
+TICKET_CLOSED_MESSAGE = "Обращение закрыто. Следующее сообщение пользователя откроет новое обращение."
 
 
 @router.message(F.chat.type == "private", CommandStart())
@@ -34,6 +38,58 @@ async def forward_private_message(message: Message, bot: Bot, settings: Settings
         await copy_private_message_to_topic(message, bot, settings, topic)
 
 
+@router.callback_query(lambda callback: is_close_ticket_callback(callback.data))
+async def close_support_topic_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    if not is_allowed_operator(callback.from_user.id, settings):
+        await callback.answer("Нет прав на закрытие обращения.", show_alert=True)
+        return
+
+    if not isinstance(callback.message, Message):
+        await callback.answer("Не удалось определить topic.", show_alert=True)
+        return
+    if callback.message.chat.id != settings.support_chat_id:
+        await callback.answer("Кнопка доступна только в чате поддержки.", show_alert=True)
+        return
+
+    topic_id = topic_id_from_close_callback(callback.data or "")
+    found, changed = await close_topic(topic_id)
+    if not found:
+        await callback.answer("Topic не найден в базе.", show_alert=True)
+        return
+    if not changed:
+        await callback.answer("Обращение уже закрыто.")
+        return
+
+    await callback.answer("Обращение закрыто.")
+    await send_topic_status_message(bot, settings, topic_id, TICKET_CLOSED_MESSAGE)
+
+
+@router.message(F.chat.id, Command("end"))
+async def close_support_topic_command(message: Message, bot: Bot, settings: Settings) -> None:
+    if message.chat.id != settings.support_chat_id:
+        return
+    if message.message_thread_id is None:
+        await message.answer("Команда /end должна быть отправлена внутри topic обращения.")
+        return
+    if message.from_user is None or not is_allowed_operator(message.from_user.id, settings):
+        await message.answer("Нет прав на закрытие обращения.")
+        return
+
+    found, changed = await close_topic(message.message_thread_id)
+    if not found:
+        await message.answer("Topic не найден в базе.")
+        return
+    if not changed:
+        await message.answer("Обращение уже закрыто.")
+        return
+
+    await send_topic_status_message(bot, settings, message.message_thread_id, TICKET_CLOSED_MESSAGE)
+
+
 @router.message(F.chat.id)
 async def forward_support_topic_message(message: Message, bot: Bot, settings: Settings) -> None:
     if message.chat.id != settings.support_chat_id:
@@ -49,6 +105,12 @@ async def forward_support_topic_message(message: Message, bot: Bot, settings: Se
         print(
             "Support topic message ignored: topic_id "
             f"{message.message_thread_id} was not found in database."
+        )
+        return
+    if not is_open_topic(user):
+        print(
+            "Support topic message ignored: topic_id "
+            f"{message.message_thread_id} is not open."
         )
         return
 
@@ -70,13 +132,17 @@ def should_ignore_private_message(message: Message) -> bool:
 def should_ignore_support_message(message: Message, settings: Settings) -> bool:
     if message.from_user is None or message.from_user.is_bot:
         return True
-    if settings.admin_ids and message.from_user.id not in settings.admin_ids:
+    if not is_allowed_operator(message.from_user.id, settings):
         print(
             "Support topic message ignored: operator "
             f"{message.from_user.id} is not listed in ADMIN_IDS."
         )
         return True
     return is_slash_command(message) or is_service_message(message)
+
+
+def is_allowed_operator(user_id: int, settings: Settings) -> bool:
+    return not settings.admin_ids or user_id in settings.admin_ids
 
 
 def is_slash_command(message: Message) -> bool:
@@ -145,6 +211,33 @@ async def recreate_private_support_topic(
         )
 
 
+async def close_topic(topic_id: int) -> tuple:
+    async with open_database_session() as session:
+        topic = await get_by_topic_id(session, topic_id)
+        if topic is None:
+            return False, False
+        if not is_open_topic(topic):
+            return True, False
+        await close_support_topic(session, topic_id)
+    return True, True
+
+
+async def send_topic_status_message(
+    bot: Bot,
+    settings: Settings,
+    topic_id: int,
+    text: str,
+) -> None:
+    try:
+        await bot.send_message(
+            chat_id=settings.support_chat_id,
+            message_thread_id=topic_id,
+            text=text,
+        )
+    except TelegramBadRequest as exc:
+        print(f"Cannot send topic status message to topic_id {topic_id}: {exc}")
+
+
 def is_message_thread_not_found(exc: TelegramBadRequest) -> bool:
     return "message thread not found" in str(exc).lower()
 
@@ -155,3 +248,7 @@ def get_topic_id(topic: object) -> int:
 
 def get_user_id(user: object) -> int:
     return int(user.user_id)
+
+
+def is_open_topic(topic: object) -> bool:
+    return getattr(topic, "status", None) == "open"

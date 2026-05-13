@@ -9,10 +9,15 @@ from typing import Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.errors import SupportChatConfigError, SupportTopicLifecycleError
+from bot.errors import SupportChatConfigError, SupportTopicLifecycleError, SupportTopicNotFoundError
 from database import config as database_config
+
+
+STATUS_OPEN = "open"
+STATUS_CLOSED = "closed"
+CLOSE_CALLBACK_PREFIX = "close_ticket:"
 
 
 @asynccontextmanager
@@ -55,20 +60,21 @@ async def ensure_support_topic_for_message(
 
     topic = await repository.get_by_user_id(session, message.from_user.id)
     if topic is not None:
-        await _call_touch_support_topic(repository, session=session, topic=topic, message=message)
+        was_open = _is_topic_open(topic)
+        topic = await _call_touch_support_topic(
+            repository,
+            session=session,
+            topic=topic,
+            message=message,
+            status=None if was_open else STATUS_OPEN,
+        )
+        if was_open:
+            return topic
+
         try:
             await refresh_topic_header(bot, message, support_chat_id, int(topic.topic_id))
-        except SupportTopicLifecycleError as exc:
-            if not _is_message_thread_not_found(exc):
-                raise
-            topic = await recreate_support_topic(
-                session,
-                bot,
-                message,
-                support_chat_id,
-                topic,
-            )
-            await refresh_topic_header(bot, message, support_chat_id, int(topic.topic_id))
+        except SupportTopicNotFoundError:
+            topic = await recreate_support_topic(session, bot, message, support_chat_id, topic)
         return topic
 
     forum_topic = await _create_forum_topic(bot, message, support_chat_id)
@@ -81,6 +87,7 @@ async def ensure_support_topic_for_message(
         username=message.from_user.username,
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name,
+        status=STATUS_OPEN,
     )
 
 
@@ -96,6 +103,7 @@ async def refresh_topic_header(
             message_thread_id=topic_id,
             text=_topic_header_text(message),
             disable_web_page_preview=True,
+            reply_markup=topic_close_keyboard(topic_id),
         )
         await _unpin_all_forum_topic_messages(bot, support_chat_id, topic_id)
         await bot.pin_chat_message(
@@ -135,9 +143,16 @@ async def recreate_support_topic(
             username=message.from_user.username,
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
+            status=STATUS_OPEN,
         )
 
-    await _call_touch_support_topic(repository, session=session, topic=persistent_topic, message=message)
+    await _call_touch_support_topic(
+        repository,
+        session=session,
+        topic=persistent_topic,
+        message=message,
+        status=STATUS_OPEN,
+    )
     persistent_topic = await _recreate_support_topic(
         repository,
         session=session,
@@ -152,6 +167,46 @@ async def recreate_support_topic(
 
 async def get_by_topic_id(session: object, topic_id: int) -> Optional[object]:
     return await _repositories().get_by_topic_id(session, topic_id)
+
+
+async def close_support_topic(session: object, topic_id: int) -> Optional[object]:
+    repository = _repositories()
+    topic = await repository.get_by_topic_id(session, topic_id)
+    if topic is None:
+        return None
+    if _is_topic_closed(topic):
+        return topic
+    return await _call_update_support_topic(
+        repository,
+        session=session,
+        topic=topic,
+        status=STATUS_CLOSED,
+    )
+
+
+def topic_close_keyboard(topic_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Закрыть обращение",
+                    callback_data=build_close_callback_data(topic_id),
+                )
+            ]
+        ]
+    )
+
+
+def build_close_callback_data(topic_id: int) -> str:
+    return f"{CLOSE_CALLBACK_PREFIX}{topic_id}"
+
+
+def is_close_ticket_callback(data: Optional[str]) -> bool:
+    return bool(data and data.startswith(CLOSE_CALLBACK_PREFIX))
+
+
+def topic_id_from_close_callback(data: str) -> int:
+    return int(data[len(CLOSE_CALLBACK_PREFIX) :])
 
 
 async def _call_optional_session_method(session: object, name: str) -> None:
@@ -184,6 +239,7 @@ async def _call_touch_support_topic(
     session: object,
     topic: object,
     message: Message,
+    status: Optional[str] = None,
 ) -> object:
     touch = getattr(repository, "touch_support_topic", None)
     if touch is None or message.from_user is None:
@@ -196,9 +252,24 @@ async def _call_touch_support_topic(
         "full_name": message.from_user.full_name,
         "first_name": message.from_user.first_name,
         "last_name": message.from_user.last_name,
-        "status": "open",
+        "status": status,
     }
     return await _call_filtered(touch, **values)
+
+
+async def _call_update_support_topic(
+    repository: object,
+    *,
+    session: object,
+    topic: object,
+    status: str,
+) -> object:
+    update = getattr(repository, "update_support_topic", None)
+    if update is None:
+        raise SupportTopicLifecycleError(
+            "Cannot update support topic status: repository.update_support_topic is missing."
+        )
+    return await _call_filtered(update, session=session, topic=topic, status=status)
 
 
 async def _call_update_topic_id(
@@ -318,9 +389,17 @@ def _repositories() -> object:
     return import_module("database.repositories")
 
 
+def _is_topic_open(topic: object) -> bool:
+    return getattr(topic, "status", None) == STATUS_OPEN
+
+
+def _is_topic_closed(topic: object) -> bool:
+    return getattr(topic, "status", None) == STATUS_CLOSED
+
+
 def _raise_readable_topic_error(exc: TelegramBadRequest) -> None:
     if _is_message_thread_not_found(exc):
-        raise SupportTopicLifecycleError(
+        raise SupportTopicNotFoundError(
             "Telegram BadRequest: message thread not found. "
             "The support forum topic was probably deleted."
         ) from exc
