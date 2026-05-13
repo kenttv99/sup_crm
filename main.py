@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-import asyncio
 import sys
 from typing import Dict, Optional
 
@@ -11,9 +10,6 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from bot.factory import create_bot, create_dispatcher
 from config.settings import get_settings
 
-
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 settings = get_settings()
 bot = create_bot(settings)

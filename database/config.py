@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, URL
@@ -14,8 +14,6 @@ class Base(DeclarativeBase):
     pass
 
 
-DatabaseUrl = Union[str, URL]
-
 _sync_engine: Optional[Engine] = None
 _async_engine: Optional[AsyncEngine] = None
 _async_sessionmaker: Optional[sqlalchemy_async_sessionmaker[AsyncSession]] = None
@@ -27,28 +25,12 @@ def _settings() -> Any:
     return get_settings()
 
 
-def _postgres_url(url: DatabaseUrl) -> DatabaseUrl:
-    if isinstance(url, URL):
-        return url.set(drivername="postgresql+psycopg")
-
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://") :]
-
-    if not url.startswith("postgresql"):
-        return url
-
-    scheme, rest = url.split("://", 1)
-    if scheme == "postgresql+psycopg":
-        return url
-    return f"postgresql+psycopg://{rest}"
+def get_sync_database_url() -> str:
+    return _settings().sync_database_url
 
 
-def get_sync_database_url() -> DatabaseUrl:
-    return _postgres_url(_settings().sync_database_url)
-
-
-def get_async_database_url() -> DatabaseUrl:
-    return _postgres_url(_settings().async_database_url)
+def get_async_database_url() -> str:
+    return _settings().async_database_url
 
 
 def get_sql_echo() -> bool:

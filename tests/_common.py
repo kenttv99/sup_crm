@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -10,14 +9,6 @@ from urllib.parse import urlsplit, urlunsplit
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def configure_windows_event_loop_policy() -> None:
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-
-configure_windows_event_loop_policy()
-
-
 def add_project_root() -> None:
     root = str(ROOT)
     if root not in sys.path:
@@ -25,7 +16,6 @@ def add_project_root() -> None:
 
 
 def load_settings() -> Any:
-    configure_windows_event_loop_policy()
     add_project_root()
 
     from config.settings import get_settings

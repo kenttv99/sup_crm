@@ -7,3 +7,4 @@ uvicorn
 psycopg[binary]
 pydantic-settings
 httpx
+asyncpg

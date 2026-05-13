@@ -37,7 +37,7 @@ Build a Telegram support bot that receives user messages, keeps a CRM-facing sup
 - Local DSN:
   `postgresql+psycopg://postgres:assasin88@localhost:5432/sup_crm`
 - SQLAlchemy sync engine is used for scripts, migrations-adjacent tooling, and simple administrative tasks.
-- SQLAlchemy async engine is used for bot and webhook runtime paths.
+- SQLAlchemy async engine is used for bot and webhook runtime paths. On Windows local development, use `postgresql+asyncpg` for `ASYNC_DATABASE_URL`.
 - Alembic owns schema migrations.
 
 ## Configuration
@@ -48,7 +48,7 @@ Required environment variables:
 - `SUPPORT_CHAT_ID`: Telegram support group or supergroup id. Use numeric `0` only as a local placeholder; before real startup replace it with the actual negative supergroup id.
 - `DATABASE_URL`: default PostgreSQL SQLAlchemy DSN.
 - `SYNC_DATABASE_URL`: sync SQLAlchemy DSN.
-- `ASYNC_DATABASE_URL`: async SQLAlchemy DSN.
+- `ASYNC_DATABASE_URL`: async SQLAlchemy DSN, for example `postgresql+asyncpg://...`.
 - `REDIS_URL`: Redis connection URL.
 - `WEBHOOK_BASE_URL`: public or local webhook base URL.
 - `WEBHOOK_PATH`: Telegram webhook path.
@@ -81,6 +81,7 @@ Runtime and infrastructure dependencies live in `requirements.txt`:
 - `psycopg[binary]`
 - `pydantic-settings`
 - `httpx`
+- `asyncpg`
 
 ## Test And Utility Scripts
 
