@@ -554,7 +554,7 @@ def _is_topic_closed(topic: object) -> bool:
 def _raise_readable_topic_error(exc: TelegramBadRequest) -> None:
     if _is_message_thread_not_found(exc):
         raise SupportTopicNotFoundError(
-            "Telegram BadRequest: message thread not found. "
+            "Telegram BadRequest: support forum topic was not found or became invalid. "
             "The support forum topic was probably deleted."
         ) from exc
     if _is_not_enough_rights(exc):
@@ -571,7 +571,8 @@ def _raise_readable_topic_error(exc: TelegramBadRequest) -> None:
 
 
 def _is_message_thread_not_found(exc: BaseException) -> bool:
-    return "message thread not found" in _error_text(exc)
+    text = _error_text(exc)
+    return "message thread not found" in text or "topic_id_invalid" in text
 
 
 def _is_not_enough_rights(exc: BaseException) -> bool:

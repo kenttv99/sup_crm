@@ -259,7 +259,8 @@ async def send_topic_status_message(
 
 
 def is_message_thread_not_found(exc: TelegramBadRequest) -> bool:
-    return "message thread not found" in str(exc).lower()
+    text = str(exc).lower()
+    return "message thread not found" in text or "topic_id_invalid" in text
 
 
 def get_topic_id(topic: object) -> int:
