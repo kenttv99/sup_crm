@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +52,13 @@ async def get_by_topic_id(
         select(SupportTopic).where(SupportTopic.topic_id == topic_id)
     )
     return result.scalar_one_or_none()
+
+
+async def get_open_topics(session: AsyncSession) -> Sequence[SupportTopic]:
+    result = await session.execute(
+        select(SupportTopic).where(SupportTopic.status == "open")
+    )
+    return result.scalars().all()
 
 
 async def create_support_topic(

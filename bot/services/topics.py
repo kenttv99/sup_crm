@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from importlib import import_module
 from inspect import Parameter, isawaitable, signature
-from typing import Optional
+from typing import Optional, Tuple
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -18,6 +18,11 @@ from database import config as database_config
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
 CLOSE_CALLBACK_PREFIX = "close_ticket:"
+STATUS_PREFIXES = {
+    STATUS_OPEN: "\U0001f7e2",
+    STATUS_CLOSED: "\U0001f534",
+}
+TELEGRAM_FORUM_TOPIC_NAME_LIMIT = 128
 
 
 @asynccontextmanager
@@ -69,9 +74,24 @@ async def ensure_support_topic_for_message(
             status=None if was_open else STATUS_OPEN,
         )
         if was_open:
+            try:
+                await _rename_forum_topic(
+                    bot,
+                    support_chat_id,
+                    int(topic.topic_id),
+                    _topic_name(message, STATUS_OPEN),
+                )
+            except SupportTopicNotFoundError:
+                topic = await recreate_support_topic(session, bot, message, support_chat_id, topic)
             return topic
 
         try:
+            await _rename_forum_topic(
+                bot,
+                support_chat_id,
+                int(topic.topic_id),
+                _topic_name(message, STATUS_OPEN),
+            )
             await refresh_topic_header(bot, message, support_chat_id, int(topic.topic_id))
         except SupportTopicNotFoundError:
             topic = await recreate_support_topic(session, bot, message, support_chat_id, topic)
@@ -85,6 +105,7 @@ async def ensure_support_topic_for_message(
         user_id=message.from_user.id,
         topic_id=forum_topic.message_thread_id,
         username=message.from_user.username,
+        full_name=message.from_user.full_name,
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name,
         status=STATUS_OPEN,
@@ -141,6 +162,7 @@ async def recreate_support_topic(
             user_id=message.from_user.id,
             topic_id=forum_topic.message_thread_id,
             username=message.from_user.username,
+            full_name=message.from_user.full_name,
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
             status=STATUS_OPEN,
@@ -169,19 +191,72 @@ async def get_by_topic_id(session: object, topic_id: int) -> Optional[object]:
     return await _repositories().get_by_topic_id(session, topic_id)
 
 
-async def close_support_topic(session: object, topic_id: int) -> Optional[object]:
+async def close_support_topic(
+    session: object,
+    bot: Bot,
+    support_chat_id: int,
+    topic_id: int,
+) -> Optional[object]:
     repository = _repositories()
     topic = await repository.get_by_topic_id(session, topic_id)
     if topic is None:
         return None
     if _is_topic_closed(topic):
+        await _try_rename_forum_topic(
+            bot,
+            support_chat_id,
+            int(topic.topic_id),
+            _topic_name_from_topic(topic, STATUS_CLOSED),
+        )
         return topic
-    return await _call_update_support_topic(
+    topic = await _call_update_support_topic(
         repository,
         session=session,
         topic=topic,
         status=STATUS_CLOSED,
     )
+    await _try_rename_forum_topic(
+        bot,
+        support_chat_id,
+        int(topic.topic_id),
+        _topic_name_from_topic(topic, STATUS_CLOSED),
+    )
+    return topic
+
+
+async def close_all_support_topics(
+    session: object,
+    bot: Bot,
+    support_chat_id: int,
+) -> Tuple[int, int]:
+    repository = _repositories()
+    get_open_topics = getattr(repository, "get_open_topics", None)
+    if get_open_topics is None:
+        raise SupportTopicLifecycleError(
+            "Cannot close all support topics: repository.get_open_topics is missing."
+        )
+
+    topics = await _call_filtered(get_open_topics, session=session)
+    closed_count = 0
+    renamed_count = 0
+    for topic in topics:
+        topic = await _call_update_support_topic(
+            repository,
+            session=session,
+            topic=topic,
+            status=STATUS_CLOSED,
+        )
+        closed_count += 1
+        renamed = await _try_rename_forum_topic(
+            bot,
+            support_chat_id,
+            int(topic.topic_id),
+            _topic_name_from_topic(topic, STATUS_CLOSED),
+        )
+        if renamed:
+            renamed_count += 1
+
+    return closed_count, renamed_count
 
 
 def topic_close_keyboard(topic_id: int) -> InlineKeyboardMarkup:
@@ -309,7 +384,7 @@ async def _create_forum_topic(bot: Bot, message: Message, support_chat_id: int) 
     try:
         return await bot.create_forum_topic(
             chat_id=support_chat_id,
-            name=_topic_name(message),
+            name=_topic_name(message, STATUS_OPEN),
         )
     except TelegramBadRequest as exc:
         if _is_not_enough_rights(exc):
@@ -357,6 +432,43 @@ async def _unpin_all_forum_topic_messages(
     )
 
 
+async def _rename_forum_topic(
+    bot: Bot,
+    support_chat_id: int,
+    topic_id: int,
+    name: str,
+) -> None:
+    edit_forum_topic = getattr(bot, "edit_forum_topic", None)
+    if edit_forum_topic is None:
+        raise SupportTopicLifecycleError(
+            "Cannot rename forum topic: Bot.edit_forum_topic is unavailable."
+        )
+
+    try:
+        await edit_forum_topic(
+            chat_id=support_chat_id,
+            message_thread_id=topic_id,
+            name=name,
+        )
+    except TelegramBadRequest as exc:
+        if _is_not_modified(exc):
+            return
+        _raise_readable_topic_error(exc)
+
+
+async def _try_rename_forum_topic(
+    bot: Bot,
+    support_chat_id: int,
+    topic_id: int,
+    name: str,
+) -> bool:
+    try:
+        await _rename_forum_topic(bot, support_chat_id, topic_id, name)
+    except SupportTopicNotFoundError:
+        return False
+    return True
+
+
 def _topic_header_text(message: Message) -> str:
     if message.from_user is None:
         raise RuntimeError("Private support message must have from_user")
@@ -376,13 +488,55 @@ def _topic_header_text(message: Message) -> str:
     )
 
 
-def _topic_name(message: Message) -> str:
+def _topic_name(message: Message, status: str) -> str:
     user = message.from_user
     if user is None:
-        return f"user:{message.chat.id}"
+        return format_topic_name(status, None, None, message.chat.id)
 
-    name = user.full_name or user.username or str(user.id)
-    return f"{name} ({user.id})"[:128]
+    return format_topic_name(status, user.full_name, user.username, user.id)
+
+
+def _topic_name_from_topic(topic: object, status: str) -> str:
+    return format_topic_name(
+        status,
+        getattr(topic, "full_name", None),
+        getattr(topic, "username", None),
+        int(getattr(topic, "user_id")),
+    )
+
+
+def format_topic_name(
+    status: str,
+    full_name: Optional[str],
+    username: Optional[str],
+    user_id: int,
+) -> str:
+    prefix = STATUS_PREFIXES.get(status, STATUS_PREFIXES[STATUS_OPEN])
+    clean_full_name = _clean_text(full_name)
+    identity = _topic_identity(username, user_id)
+
+    if clean_full_name:
+        body = f"{clean_full_name} ({identity})"
+    else:
+        body = identity
+
+    return f"{prefix} {body}"[:TELEGRAM_FORUM_TOPIC_NAME_LIMIT]
+
+
+def _topic_identity(username: Optional[str], user_id: int) -> str:
+    clean_username = _clean_text(username)
+    if clean_username:
+        return f"@{clean_username.lstrip('@')}"
+    return str(user_id)
+
+
+def _clean_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value
 
 
 def _repositories() -> object:
@@ -423,6 +577,10 @@ def _is_message_thread_not_found(exc: BaseException) -> bool:
 def _is_not_enough_rights(exc: BaseException) -> bool:
     text = _error_text(exc)
     return "not enough rights" in text or "have no rights" in text
+
+
+def _is_not_modified(exc: BaseException) -> bool:
+    return "not modified" in _error_text(exc)
 
 
 def _error_text(exc: BaseException) -> str:

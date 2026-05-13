@@ -30,16 +30,21 @@ Build a Telegram support bot that receives user messages, keeps a CRM-facing sup
 - The mapping between user and topic is persisted in PostgreSQL.
 - Repeated user messages reuse the existing topic.
 - Topic metadata should include Telegram user id, topic/message thread id, creation timestamp, and status.
+- Telegram topic title is part of the operator-facing contract:
+  - open appeal: `🟢 <name> (@login)` or `🟢 @login`;
+  - closed appeal: `🔴 <name> (@login)` or `🔴 @login`.
+- If the user has no Telegram username, the same format uses the numeric Telegram user id instead of `@login`.
 
 ## Topic Lifecycle Contract
 
 - `status=open`: active appeal. The information header for the current appeal must already exist, so repeated user messages only get copied to the topic.
 - `status=closed`: closed appeal. Operator messages from that topic are ignored by the relay.
-- New database row: create Telegram topic, send one information header, pin it, then store `status=open`.
-- Existing row with `status=closed`: treat the next private user message as a new appeal in the existing topic, switch status to `open`, send one new information header, unpin previous topic pins, and pin the new header.
+- New database row: create Telegram topic with an open title, send one information header, pin it, then store `status=open`.
+- Existing row with `status=closed`: treat the next private user message as a new appeal in the existing topic, switch status to `open`, rename the topic to the open title, send one new information header, unpin previous topic pins, and pin the new header.
 - Existing row with `status=open`: do not send or pin a new information header.
-- Deleted Telegram topic: create a replacement topic, update the stored `topic_id`, set `status=open`, send and pin one new information header.
-- Closing can be done from the inline topic button or with `/end` inside the topic; both paths are idempotent and update the database status.
+- Deleted Telegram topic: create a replacement topic with an open title, update the stored `topic_id`, set `status=open`, send and pin one new information header.
+- Closing can be done from the inline topic button or with `/end` inside the topic; both paths are idempotent, update the database status, and rename the topic to the closed title.
+- `/all_end` is an operator command sent inside the support forum. It closes every currently open appeal, renames affected topics to the closed title, reports the number of closed rows and renamed topics, and requires the same operator authorization as `/end`.
 
 ## Database
 

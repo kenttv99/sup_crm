@@ -4,6 +4,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from bot.services.topics import (
+    close_all_support_topics,
     close_support_topic,
     get_by_topic_id,
     get_or_create_support_topic,
@@ -56,7 +57,7 @@ async def close_support_topic_callback(
         return
 
     topic_id = topic_id_from_close_callback(callback.data or "")
-    found, changed = await close_topic(topic_id)
+    found, changed = await close_topic(topic_id, bot, settings)
     if not found:
         await callback.answer("Topic не найден в базе.", show_alert=True)
         return
@@ -79,7 +80,7 @@ async def close_support_topic_command(message: Message, bot: Bot, settings: Sett
         await message.answer("Нет прав на закрытие обращения.")
         return
 
-    found, changed = await close_topic(message.message_thread_id)
+    found, changed = await close_topic(message.message_thread_id, bot, settings)
     if not found:
         await message.answer("Topic не найден в базе.")
         return
@@ -88,6 +89,26 @@ async def close_support_topic_command(message: Message, bot: Bot, settings: Sett
         return
 
     await send_topic_status_message(bot, settings, message.message_thread_id, TICKET_CLOSED_MESSAGE)
+
+
+@router.message(F.chat.id, Command("all_end"))
+async def close_all_support_topics_command(message: Message, bot: Bot, settings: Settings) -> None:
+    if message.chat.id != settings.support_chat_id:
+        return
+    if message.message_thread_id is None:
+        await message.answer("Команда /all_end должна быть отправлена внутри topic поддержки.")
+        return
+    if message.from_user is None or not is_allowed_operator(message.from_user.id, settings):
+        await message.answer("Нет прав на закрытие обращений.")
+        return
+
+    async with open_database_session() as session:
+        closed_count, renamed_count = await close_all_support_topics(
+            session,
+            bot,
+            settings.support_chat_id,
+        )
+    await message.answer(f"Закрыто обращений: {closed_count}. Переименовано topic: {renamed_count}.")
 
 
 @router.message(F.chat.id)
@@ -211,15 +232,14 @@ async def recreate_private_support_topic(
         )
 
 
-async def close_topic(topic_id: int) -> tuple:
+async def close_topic(topic_id: int, bot: Bot, settings: Settings) -> tuple:
     async with open_database_session() as session:
         topic = await get_by_topic_id(session, topic_id)
         if topic is None:
             return False, False
-        if not is_open_topic(topic):
-            return True, False
-        await close_support_topic(session, topic_id)
-    return True, True
+        was_open = is_open_topic(topic)
+        await close_support_topic(session, bot, settings.support_chat_id, topic_id)
+    return True, was_open
 
 
 async def send_topic_status_message(
