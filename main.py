@@ -3,6 +3,7 @@ import asyncio
 import sys
 
 import uvicorn
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.types import Update
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
@@ -18,13 +19,39 @@ bot = create_bot(settings)
 dispatcher = create_dispatcher(settings)
 
 
+class WebhookStartupError(RuntimeError):
+    pass
+
+
+def ensure_telegram_webhook_configured() -> None:
+    if "replace_with" in settings.bot_token:
+        raise WebhookStartupError(
+            "BOT_TOKEN is not configured. Set a real Telegram bot token in .env before webhook startup."
+        )
+    if settings.support_chat_id == 0:
+        raise WebhookStartupError(
+            "SUPPORT_CHAT_ID is not configured. Set the real Telegram support supergroup id in .env."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await bot.set_webhook(
-        url=settings.webhook_url,
-        secret_token=settings.webhook_secret_token,
-        drop_pending_updates=settings.drop_pending_updates,
-    )
+    try:
+        ensure_telegram_webhook_configured()
+        await bot.set_webhook(
+            url=settings.webhook_url,
+            secret_token=settings.webhook_secret_token,
+            drop_pending_updates=settings.drop_pending_updates,
+        )
+    except WebhookStartupError as exc:
+        print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
+        await bot.session.close()
+        raise WebhookStartupError(str(exc)) from None
+    except TelegramUnauthorizedError:
+        message = "Telegram rejected BOT_TOKEN while setting webhook. Check BOT_TOKEN in .env."
+        print(f"\nWebhook startup error: {message}\n", file=sys.stderr)
+        await bot.session.close()
+        raise WebhookStartupError(message) from None
     try:
         yield
     finally:

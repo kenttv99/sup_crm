@@ -72,20 +72,7 @@ async def _call_optional_session_method(session: object, name: str) -> None:
 
 
 def _get_session_factory() -> Callable[[], object]:
-    for name in (
-        "async_session_maker",
-        "async_session",
-        "AsyncSessionLocal",
-        "SessionLocal",
-        "session_maker",
-    ):
-        factory = getattr(database_config, name, None)
-        if factory is not None:
-            return factory
-    raise RuntimeError(
-        "database.config must expose async_session_maker, async_session, "
-        "AsyncSessionLocal, SessionLocal, or session_maker"
-    )
+    return database_config.async_session_maker
 
 
 async def _call_create_support_topic(repository: object, **values: object) -> object:

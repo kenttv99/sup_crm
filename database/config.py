@@ -19,19 +19,6 @@ _async_engine: AsyncEngine | None = None
 _async_sessionmaker: sqlalchemy_async_sessionmaker[AsyncSession] | None = None
 
 
-def _setting_value(settings: Any, *names: str) -> str | None:
-    for name in names:
-        value = getattr(settings, name, None)
-        if value is None:
-            continue
-        if hasattr(value, "get_secret_value"):
-            value = value.get_secret_value()
-        value = str(value).strip()
-        if value:
-            return value
-    return None
-
-
 def _settings() -> Any:
     from config.settings import get_settings
 
@@ -55,38 +42,15 @@ def _postgres_url(url: str | URL) -> str | URL:
 
 
 def get_sync_database_url() -> str | URL:
-    settings = _settings()
-    url = _setting_value(
-        settings,
-        "sync_database_url",
-        "database_sync_url",
-        "sqlalchemy_sync_database_url",
-        "database_url",
-        "postgres_dsn",
-    )
-    if url is None:
-        raise RuntimeError("PostgreSQL URL is not configured")
-    return _postgres_url(url)
+    return _postgres_url(_settings().sync_database_url)
 
 
 def get_async_database_url() -> str | URL:
-    settings = _settings()
-    url = _setting_value(
-        settings,
-        "async_database_url",
-        "database_async_url",
-        "sqlalchemy_async_database_url",
-        "database_url",
-        "postgres_dsn",
-    )
-    if url is None:
-        raise RuntimeError("PostgreSQL URL is not configured")
-    return _postgres_url(url)
+    return _postgres_url(_settings().async_database_url)
 
 
 def get_sql_echo() -> bool:
-    settings = _settings()
-    return bool(getattr(settings, "sql_echo", False))
+    return _settings().sql_echo
 
 
 def get_sync_engine() -> Engine:

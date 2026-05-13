@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import importlib
-import os
 from typing import Any
 
-from _common import env_or_setting, load_dotenv, load_settings, settings_to_dict
+from _common import load_settings
 
 
 APP_MODULES = ("main", "app.main", "bot.main", "web.main")
@@ -28,7 +27,7 @@ def webhook_path(app: Any) -> str:
         path = getattr(route, "path", "")
         if "webhook" in path.lower():
             return path
-    return "/webhook"
+    raise RuntimeError("Webhook route is not registered")
 
 
 def minimal_update() -> dict[str, Any]:
@@ -49,10 +48,7 @@ def minimal_update() -> dict[str, Any]:
 
 
 def main() -> int:
-    load_dotenv()
-    settings_obj, _ = load_settings()
-    settings = settings_to_dict(settings_obj)
-    secret = env_or_setting(("WEBHOOK_SECRET", "WEBHOOK_SECRET_TOKEN", "BOT_WEBHOOK_SECRET"), settings)
+    settings = load_settings()
 
     try:
         from fastapi.testclient import TestClient
@@ -74,15 +70,9 @@ def main() -> int:
     wrong = client.post(path, json=payload, headers={SECRET_HEADER: "wrong-secret"})
     print(f"wrong_secret_status: {wrong.status_code}")
 
-    if secret:
-        right = client.post(path, json=payload, headers={SECRET_HEADER: str(secret)})
-        print(f"right_secret_status: {right.status_code}")
-        return 0 if wrong.status_code != right.status_code or right.status_code < 400 else 1
-
-    no_secret = client.post(path, json=payload)
-    print(f"no_secret_status: {no_secret.status_code}")
-    print("WEBHOOK_SECRET is not set; right-secret check skipped")
-    return 0 if no_secret.status_code < 500 else 1
+    right = client.post(path, json=payload, headers={SECRET_HEADER: settings.webhook_secret_token})
+    print(f"right_secret_status: {right.status_code}")
+    return 0 if wrong.status_code == 401 and right.status_code == 200 else 1
 
 
 if __name__ == "__main__":

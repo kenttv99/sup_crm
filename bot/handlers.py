@@ -85,16 +85,8 @@ def is_service_message(message: Message) -> bool:
 
 
 def get_topic_id(topic: object) -> int:
-    for field in ("topic_id", "message_thread_id", "thread_id"):
-        value = getattr(topic, field, None)
-        if value is not None:
-            return int(value)
-    raise RuntimeError("Support topic object must expose topic_id or message_thread_id")
+    return int(topic.topic_id)
 
 
 def get_user_id(user: object) -> int:
-    for field in ("user_id", "telegram_id", "telegram_user_id"):
-        value = getattr(user, field, None)
-        if value is not None:
-            return int(value)
-    raise RuntimeError("User object must expose user_id, telegram_id, or telegram_user_id")
+    return int(user.user_id)

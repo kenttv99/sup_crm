@@ -5,19 +5,14 @@ import asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from _common import async_database_url, load_dotenv, load_settings, mask_value, settings_to_dict
+from _common import load_settings, mask_value
 
 
 async def check() -> int:
-    load_dotenv()
-    settings_obj, _ = load_settings()
-    settings = settings_to_dict(settings_obj)
-    url = async_database_url(settings)
-    if not url:
-        print("database_url: missing")
-        return 1
+    settings = load_settings()
+    url = settings.async_database_url
 
-    print(f"database_url: {mask_value('DATABASE_URL', url)}")
+    print(f"database_url: {mask_value('ASYNC_DATABASE_URL', url)}")
     engine = create_async_engine(url, pool_pre_ping=True)
     try:
         async with engine.connect() as conn:

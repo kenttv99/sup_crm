@@ -21,7 +21,7 @@ Build a Telegram support bot that receives user messages, keeps a CRM-facing sup
 2. FastAPI validates the webhook secret and passes the update to `aiogram`.
 3. The bot identifies the Telegram user.
 4. The CRM layer loads or creates one support topic for that user.
-5. User messages are stored in PostgreSQL and forwarded to the support chat topic.
+5. User/topic mapping is stored in PostgreSQL; message history stays in Telegram topics.
 6. Support replies in the topic are mapped back to the user and sent through the bot.
 
 ## Topic Model
@@ -44,8 +44,8 @@ Build a Telegram support bot that receives user messages, keeps a CRM-facing sup
 
 Required environment variables:
 
-- `BOT_TOKEN`: Telegram bot token. Local dummy value must keep the `digits:string` token shape so settings and bot initialization can import without real Telegram credentials.
-- `SUPPORT_CHAT_ID`: Telegram support group or supergroup id. Use numeric `0` only as an import-safe placeholder; before real startup replace it with the actual negative supergroup id.
+- `BOT_TOKEN`: Telegram bot token. If it is missing or still contains placeholder text, webhook startup stops with a readable startup error.
+- `SUPPORT_CHAT_ID`: Telegram support group or supergroup id. Use numeric `0` only as a local placeholder; before real startup replace it with the actual negative supergroup id.
 - `DATABASE_URL`: default PostgreSQL SQLAlchemy DSN.
 - `SYNC_DATABASE_URL`: sync SQLAlchemy DSN.
 - `ASYNC_DATABASE_URL`: async SQLAlchemy DSN.
@@ -65,6 +65,8 @@ Required environment variables:
 - `.env` contains local values and must not be committed.
 - `.env.example` contains the full variable list with placeholders.
 - `.gitignore` excludes `.env`, virtual environments, caches, IDE metadata, and logs while keeping `.env.example` trackable.
+- `python main.py` uses `APP_HOST` and `APP_PORT` from `.env`.
+- `uvicorn main:app --reload` uses uvicorn CLI defaults unless `--host` and `--port` are passed explicitly.
 
 ## Dependencies
 
@@ -78,6 +80,7 @@ Runtime and infrastructure dependencies live in `requirements.txt`:
 - `uvicorn`
 - `psycopg[binary]`
 - `pydantic-settings`
+- `httpx`
 
 ## Test And Utility Scripts
 
