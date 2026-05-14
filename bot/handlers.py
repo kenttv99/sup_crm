@@ -1,3 +1,6 @@
+from html import escape
+from typing import Optional
+
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
@@ -19,14 +22,13 @@ from config.settings import Settings
 
 router = Router(name="support")
 TICKET_CLOSED_MESSAGE = "Обращение закрыто. Следующее сообщение пользователя откроет новое обращение."
-USER_TICKET_CLOSED_MESSAGE = "Обращение закрыто. При необходимости переоткройте его кнопкой ниже."
-USER_TICKET_REOPENED_MESSAGE = "Обращение открыто. Напишите сообщение, оператор ответит здесь."
+USER_TICKET_CLOSED_MESSAGE = "Обращение закрыто. Если текущий вопрос не решен, обращение можно переоткрыть по кнопке ниже."
 REOPEN_TICKET_CALLBACK_DATA = "reopen_ticket"
 
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(message: Message) -> None:
-    await message.answer("Напишите сообщение, оператор ответит здесь.")
+    await send_welcome_message(message)
 
 
 @router.message(F.chat.type == "private", Command("end"))
@@ -131,7 +133,7 @@ async def reopen_private_support_topic_callback(
 
     await callback.answer("Обращение открыто.")
     await remove_inline_keyboard(callback.message)
-    await callback.message.answer(USER_TICKET_REOPENED_MESSAGE)
+    await send_welcome_message(callback.message)
 
 
 @router.message(F.chat.id, Command("end"))
@@ -233,6 +235,24 @@ def should_ignore_support_message(message: Message, settings: Settings) -> bool:
 
 def is_allowed_operator(user_id: int, settings: Settings) -> bool:
     return not settings.admin_ids or user_id in settings.admin_ids
+
+
+async def send_welcome_message(message: Message) -> None:
+    await message.answer(
+        welcome_text(message.from_user.username if message.from_user else None),
+        parse_mode="HTML",
+    )
+
+
+def welcome_text(username: Optional[str]) -> str:
+    mention = f"@{escape(username)}" if username else "тебя"
+    return (
+        f"Рады видеть тебя, {mention} 👋\n"
+        "\n"
+        "Опиши подробно свой вопрос или задачу, к диалогу подключится первый освободившийся специалист.\n"
+        "\n"
+        "*<i>Диалоги проводятся только в этом боте, все остальные - мошенники.</i>"
+    )
 
 
 def is_slash_command(message: Message) -> bool:
