@@ -56,6 +56,11 @@ async def lifespan(app: FastAPI):
         print(f"\nWebhook startup error: {message}\n", file=sys.stderr)
         await bot.session.close()
         raise WebhookStartupError(message) from None
+    except TelegramBadRequest as exc:
+        message = f"Telegram rejected webhook URL {settings.webhook_url}: {exc}"
+        print(f"\nWebhook startup error: {message}\n", file=sys.stderr)
+        await bot.session.close()
+        raise WebhookStartupError(message) from None
     try:
         yield
     finally:
