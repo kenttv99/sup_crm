@@ -810,7 +810,7 @@ async def validate_support_chat(bot: Bot, support_chat_id: int) -> None:
             "and grant admin permissions."
         ) from exc
 
-    chat_type = str(chat.type)
+    chat_type = _telegram_value(chat.type)
     is_forum = bool(getattr(chat, "is_forum", False))
     if chat_type != "supergroup" or not is_forum:
         title = getattr(chat, "title", "")
@@ -821,7 +821,7 @@ async def validate_support_chat(bot: Bot, support_chat_id: int) -> None:
 
     bot_user = await bot.get_me()
     member = await bot.get_chat_member(support_chat_id, bot_user.id)
-    member_status = str(member.status)
+    member_status = _telegram_value(member.status)
     if member_status not in {"administrator", "creator"}:
         raise SupportChatConfigError(
             "Bot is not an administrator in SUPPORT_CHAT_ID. "
@@ -833,3 +833,7 @@ async def validate_support_chat(bot: Bot, support_chat_id: int) -> None:
             "Bot is administrator, but lacks 'Manage Topics'. "
             "Enable this permission in the support supergroup admin settings."
         )
+
+
+def _telegram_value(value: object) -> str:
+    return str(getattr(value, "value", value)).lower()
