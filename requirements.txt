@@ -1,5 +1,6 @@
 aiogram
 SQLAlchemy
+greenlet
 alembic
 redis
 fastapi

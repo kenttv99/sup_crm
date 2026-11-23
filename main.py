@@ -1,9 +1,15 @@
+import asyncio
 from contextlib import asynccontextmanager
 import sys
 from typing import Dict, Optional
 
 import uvicorn
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramUnauthorizedError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramUnauthorizedError,
+)
 from aiogram.types import Update
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
@@ -38,12 +44,23 @@ def ensure_telegram_webhook_configured() -> None:
 async def lifespan(app: FastAPI):
     try:
         ensure_telegram_webhook_configured()
-        await validate_support_chat(bot, settings.support_chat_id)
-        await bot.set_webhook(
-            url=settings.webhook_url,
-            secret_token=settings.webhook_secret_token,
-            drop_pending_updates=settings.drop_pending_updates,
-        )
+        for attempt in range(2):
+            try:
+                await validate_support_chat(bot, settings.support_chat_id)
+                await bot.set_webhook(
+                    url=settings.webhook_url,
+                    secret_token=settings.webhook_secret_token,
+                    drop_pending_updates=settings.drop_pending_updates,
+                )
+                break
+            except TelegramRetryAfter as exc:
+                if attempt == 1:
+                    raise
+                print(
+                    f"Telegram FloodWait during startup, retrying in {exc.retry_after + 1}s...",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(exc.retry_after + 1)
     except WebhookStartupError as exc:
         print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
         await bot.session.close()
@@ -62,6 +79,9 @@ async def lifespan(app: FastAPI):
         print(f"\nWebhook startup error: {message}\n", file=sys.stderr)
         await bot.session.close()
         raise WebhookStartupError(message) from None
+    except Exception:
+        await bot.session.close()
+        raise
     try:
         if not settings.admin_ids:
             print("WARNING: ADMIN_IDS is empty — any member of SUPPORT_CHAT_ID can act as operator.", file=sys.stderr)
