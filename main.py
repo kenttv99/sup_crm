@@ -44,7 +44,7 @@ def ensure_telegram_webhook_configured() -> None:
 async def lifespan(app: FastAPI):
     try:
         ensure_telegram_webhook_configured()
-        for attempt in range(2):
+        for attempt in range(4):
             try:
                 await validate_support_chat(bot, settings.support_chat_id)
                 await bot.set_webhook(
@@ -54,13 +54,13 @@ async def lifespan(app: FastAPI):
                 )
                 break
             except TelegramRetryAfter as exc:
-                if attempt == 1:
+                if attempt == 3:
                     raise
                 print(
-                    f"Telegram FloodWait during startup, retrying in {exc.retry_after + 1}s...",
+                    f"Telegram FloodWait during startup, retrying in {exc.retry_after + 2}s...",
                     file=sys.stderr,
                 )
-                await asyncio.sleep(exc.retry_after + 1)
+                await asyncio.sleep(exc.retry_after + 2)
     except WebhookStartupError as exc:
         print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
         await bot.session.close()
