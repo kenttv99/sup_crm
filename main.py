@@ -43,27 +43,13 @@ def ensure_telegram_webhook_configured() -> None:
 async def _startup_telegram(settings_obj) -> None:
     for attempt in range(10):
         try:
-            await validate_support_chat(bot, settings_obj.support_chat_id)
-            break
-        except TelegramRetryAfter as exc:
-            print(
-                f"Telegram FloodWait on validate_support_chat, retrying in {exc.retry_after + 2}s...",
-                file=sys.stderr,
-            )
-            await asyncio.sleep(exc.retry_after + 2)
-        except SupportChatConfigError as exc:
-            print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
-            return
-
-    for attempt in range(10):
-        try:
             await bot.set_webhook(
                 url=settings_obj.webhook_url,
                 secret_token=settings_obj.webhook_secret_token,
                 drop_pending_updates=settings_obj.drop_pending_updates,
             )
             print(f"Telegram webhook registered: {settings_obj.webhook_url}", file=sys.stderr)
-            return
+            break
         except TelegramRetryAfter as exc:
             print(
                 f"Telegram FloodWait on set_webhook, retrying in {exc.retry_after + 2}s...",
@@ -73,6 +59,16 @@ async def _startup_telegram(settings_obj) -> None:
         except (TelegramUnauthorizedError, TelegramBadRequest) as exc:
             print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
             return
+
+    try:
+        await validate_support_chat(bot, settings_obj.support_chat_id)
+    except TelegramRetryAfter as exc:
+        print(
+            f"Warning: skipping support chat validation due to Telegram FloodWait ({exc.retry_after}s).",
+            file=sys.stderr,
+        )
+    except SupportChatConfigError as exc:
+        print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
 
 
 @asynccontextmanager
