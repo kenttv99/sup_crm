@@ -3,12 +3,13 @@ import sys
 from typing import Dict, Optional
 
 import uvicorn
-from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramUnauthorizedError
 from aiogram.types import Update
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from bot.errors import SupportChatConfigError, SupportTopicLifecycleError
 from bot.factory import create_bot, create_dispatcher
+from bot.services.redis_cache import close_redis
 from bot.services.topics import validate_support_chat
 from config.settings import get_settings
 
@@ -62,8 +63,11 @@ async def lifespan(app: FastAPI):
         await bot.session.close()
         raise WebhookStartupError(message) from None
     try:
+        if not settings.admin_ids:
+            print("WARNING: ADMIN_IDS is empty — any member of SUPPORT_CHAT_ID can act as operator.", file=sys.stderr)
         yield
     finally:
+        await close_redis()
         await bot.session.close()
 
 
@@ -89,8 +93,8 @@ async def telegram_webhook(
     except (SupportChatConfigError, SupportTopicLifecycleError) as exc:
         print(f"Webhook domain error: {exc}", file=sys.stderr)
         return {"ok": False}
-    except TelegramBadRequest as exc:
-        print(f"Webhook Telegram bad request: {exc}", file=sys.stderr)
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        print(f"Webhook Telegram error: {exc}", file=sys.stderr)
         return {"ok": False}
     return {"ok": True}
 

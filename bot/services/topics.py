@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib import import_module
 from inspect import Parameter, isawaitable, signature
+import logging
 from typing import Optional, Tuple
 
 from aiogram import Bot
@@ -14,12 +15,24 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from bot.errors import SupportChatConfigError, SupportTopicLifecycleError, SupportTopicNotFoundError
 from database import config as database_config
 
+logger = logging.getLogger(__name__)
 
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
+
+TICKET_NEW = "new"
+TICKET_IN_PROGRESS = "in_progress"
+TICKET_WAITING_USER = "waiting_user"
+TICKET_CLOSED = "closed"
+
 CLOSE_CALLBACK_PREFIX = "close_ticket:"
+TAKE_CALLBACK_PREFIX = "take_ticket:"
+
 STATUS_PREFIXES = {
     STATUS_OPEN: "\U0001f7e2",
+    TICKET_NEW: "\U0001f7e2",
+    TICKET_IN_PROGRESS: "\U0001f7e1",
+    TICKET_WAITING_USER: "\U0001f535",
     STATUS_CLOSED: "\U0001f534",
 }
 TELEGRAM_FORUM_TOPIC_NAME_LIMIT = 128
@@ -45,8 +58,16 @@ async def get_or_create_support_topic(
     bot: Bot,
     message: Message,
     support_chat_id: int,
+    *,
+    source_payload: Optional[str] = None,
 ) -> object:
-    return await ensure_support_topic_for_message(session, bot, message, support_chat_id)
+    return await ensure_support_topic_for_message(
+        session,
+        bot,
+        message,
+        support_chat_id,
+        source_payload=source_payload,
+    )
 
 
 async def ensure_support_topic_for_message(
@@ -54,6 +75,8 @@ async def ensure_support_topic_for_message(
     bot: Bot,
     message: Message,
     support_chat_id: int,
+    *,
+    source_payload: Optional[str] = None,
 ) -> object:
     if message.from_user is None:
         raise RuntimeError("Private support message must have from_user")
@@ -63,9 +86,14 @@ async def ensure_support_topic_for_message(
     if advisory_lock is not None:
         await advisory_lock(session, message.from_user.id)
 
-    topic = await repository.get_by_user_id(session, message.from_user.id)
+    user = message.from_user
+    topic = await repository.get_by_user_id(session, user.id)
     if topic is not None:
         was_open = _is_topic_open(topic)
+        old_title = _topic_name_from_topic(
+            topic,
+            STATUS_OPEN if was_open else STATUS_CLOSED,
+        )
         topic = await _call_touch_support_topic(
             repository,
             session=session,
@@ -73,43 +101,88 @@ async def ensure_support_topic_for_message(
             message=message,
             status=None if was_open else STATUS_OPEN,
         )
+
+        ticket = await _ensure_active_ticket(
+            repository,
+            session,
+            user_id=user.id,
+            topic_id=int(topic.topic_id),
+            source_payload=source_payload,
+        )
+        effective_status = getattr(ticket, "status", STATUS_OPEN) if ticket else STATUS_OPEN
+        new_title = _topic_name(message, effective_status)
+
         if was_open:
-            try:
-                await _rename_forum_topic(
-                    bot,
-                    support_chat_id,
-                    int(topic.topic_id),
-                    _topic_name(message, STATUS_OPEN),
-                )
-            except SupportTopicNotFoundError:
-                topic = await recreate_support_topic(session, bot, message, support_chat_id, topic)
+            if old_title != new_title:
+                try:
+                    await _rename_forum_topic(bot, support_chat_id, int(topic.topic_id), new_title)
+                except SupportTopicNotFoundError:
+                    topic = await recreate_support_topic(
+                        session, bot, message, support_chat_id, topic
+                    )
             return topic
 
         try:
-            await _rename_forum_topic(
-                bot,
-                support_chat_id,
-                int(topic.topic_id),
-                _topic_name(message, STATUS_OPEN),
+            await _try_reopen_forum_topic(bot, support_chat_id, int(topic.topic_id))
+            if old_title != new_title:
+                await _rename_forum_topic(bot, support_chat_id, int(topic.topic_id), new_title)
+            header = await refresh_topic_header_for_user(
+                bot=bot,
+                support_chat_id=support_chat_id,
+                topic_id=int(topic.topic_id),
+                user_id=user.id,
+                username=user.username,
+                full_name=user.full_name,
+                ticket=ticket,
+                notes=getattr(topic, "notes", None),
             )
-            await refresh_topic_header(bot, message, support_chat_id, int(topic.topic_id))
+            await _call_update_support_topic(
+                repository,
+                session=session,
+                topic=topic,
+                header_message_id=header.message_id,
+            )
         except SupportTopicNotFoundError:
             topic = await recreate_support_topic(session, bot, message, support_chat_id, topic)
         return topic
 
     forum_topic = await _create_forum_topic(bot, message, support_chat_id)
-    await refresh_topic_header(bot, message, support_chat_id, int(forum_topic.message_thread_id))
-    return await _call_create_support_topic(
+    topic_id = int(forum_topic.message_thread_id)
+    topic = await _call_create_support_topic(
         repository,
         session=session,
-        user_id=message.from_user.id,
-        topic_id=forum_topic.message_thread_id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name,
+        user_id=user.id,
+        topic_id=topic_id,
+        username=user.username,
+        full_name=user.full_name,
+        first_name=user.first_name,
+        last_name=user.last_name,
         status=STATUS_OPEN,
     )
+    ticket = await _ensure_active_ticket(
+        repository,
+        session,
+        user_id=user.id,
+        topic_id=topic_id,
+        source_payload=source_payload,
+    )
+    header = await refresh_topic_header_for_user(
+        bot=bot,
+        support_chat_id=support_chat_id,
+        topic_id=topic_id,
+        user_id=user.id,
+        username=user.username,
+        full_name=user.full_name,
+        ticket=ticket,
+        notes=getattr(topic, "notes", None),
+    )
+    await _call_update_support_topic(
+        repository,
+        session=session,
+        topic=topic,
+        header_message_id=header.message_id,
+    )
+    return topic
 
 
 async def refresh_topic_header(
@@ -117,6 +190,9 @@ async def refresh_topic_header(
     message: Message,
     support_chat_id: int,
     topic_id: int,
+    *,
+    ticket: Optional[object] = None,
+    notes: Optional[str] = None,
 ) -> Message:
     if message.from_user is None:
         raise RuntimeError("Private support message must have from_user")
@@ -128,6 +204,8 @@ async def refresh_topic_header(
         user_id=message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
+        ticket=ticket,
+        notes=notes,
     )
 
 
@@ -138,14 +216,29 @@ async def refresh_topic_header_for_user(
     user_id: int,
     username: Optional[str],
     full_name: Optional[str],
+    *,
+    ticket: Optional[object] = None,
+    notes: Optional[str] = None,
 ) -> Message:
+    ticket_id = getattr(ticket, "id", None) if ticket is not None else None
+    assigned_id = getattr(ticket, "assigned_operator_id", None) if ticket is not None else None
     try:
         header = await bot.send_message(
             chat_id=support_chat_id,
             message_thread_id=topic_id,
-            text=_topic_header_text_for_user(user_id, username, full_name),
+            text=_topic_header_text_for_user(
+                user_id,
+                username,
+                full_name,
+                ticket=ticket,
+                notes=notes,
+            ),
             disable_web_page_preview=True,
-            reply_markup=topic_close_keyboard(topic_id),
+            reply_markup=topic_close_keyboard(
+                topic_id,
+                ticket_id=ticket_id,
+                assigned=assigned_id is not None,
+            ),
         )
         await _unpin_all_forum_topic_messages(bot, support_chat_id, topic_id)
         await bot.pin_chat_message(
@@ -173,21 +266,32 @@ async def recreate_support_topic(
     if advisory_lock is not None:
         await advisory_lock(session, message.from_user.id)
 
-    persistent_topic = await repository.get_by_user_id(session, message.from_user.id)
+    user = message.from_user
+    persistent_topic = await repository.get_by_user_id(session, user.id)
     if persistent_topic is None:
         forum_topic = await _create_forum_topic(bot, message, support_chat_id)
-        await refresh_topic_header(bot, message, support_chat_id, int(forum_topic.message_thread_id))
-        return await _call_create_support_topic(
+        topic_id = int(forum_topic.message_thread_id)
+        persistent_topic = await _call_create_support_topic(
             repository,
             session=session,
-            user_id=message.from_user.id,
-            topic_id=forum_topic.message_thread_id,
-            username=message.from_user.username,
-            full_name=message.from_user.full_name,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name,
+            user_id=user.id,
+            topic_id=topic_id,
+            username=user.username,
+            full_name=user.full_name,
+            first_name=user.first_name,
+            last_name=user.last_name,
             status=STATUS_OPEN,
         )
+        ticket = await _ensure_active_ticket(
+            repository, session, user_id=user.id, topic_id=topic_id
+        )
+        header = await refresh_topic_header(
+            bot, message, support_chat_id, topic_id, ticket=ticket
+        )
+        await _call_update_support_topic(
+            repository, session=session, topic=persistent_topic, header_message_id=header.message_id
+        )
+        return persistent_topic
 
     await _call_touch_support_topic(
         repository,
@@ -204,7 +308,23 @@ async def recreate_support_topic(
         support_chat_id=support_chat_id,
         topic=persistent_topic,
     )
-    await refresh_topic_header(bot, message, support_chat_id, int(persistent_topic.topic_id))
+    new_topic_id = int(persistent_topic.topic_id)
+    ticket = await _ensure_active_ticket(
+        repository, session, user_id=user.id, topic_id=new_topic_id
+    )
+    if ticket is not None and getattr(ticket, "topic_id", None) != new_topic_id:
+        await repository.update_ticket(session, ticket, topic_id=new_topic_id)
+    header = await refresh_topic_header(
+        bot,
+        message,
+        support_chat_id,
+        new_topic_id,
+        ticket=ticket,
+        notes=getattr(persistent_topic, "notes", None),
+    )
+    await _call_update_support_topic(
+        repository, session=session, topic=persistent_topic, header_message_id=header.message_id
+    )
     return persistent_topic
 
 
@@ -217,11 +337,18 @@ async def close_support_topic(
     bot: Bot,
     support_chat_id: int,
     topic_id: int,
+    *,
+    closed_by: str = "operator",
+    actor_type: str = "operator",
+    actor_id: Optional[int] = None,
+    close_forum: bool = True,
 ) -> Optional[object]:
     repository = _repositories()
     topic = await repository.get_by_topic_id(session, topic_id)
     if topic is None:
         return None
+
+    user_id = int(topic.user_id)
     if _is_topic_closed(topic):
         await _try_rename_forum_topic(
             bot,
@@ -230,18 +357,34 @@ async def close_support_topic(
             _topic_name_from_topic(topic, STATUS_CLOSED),
         )
         return topic
+
+    await _clear_header_keyboard(
+        bot, support_chat_id, getattr(topic, "header_message_id", None)
+    )
     topic = await _call_update_support_topic(
         repository,
         session=session,
         topic=topic,
         status=STATUS_CLOSED,
     )
+    close_ticket = getattr(repository, "close_active_ticket", None)
+    if close_ticket is not None:
+        await close_ticket(
+            session,
+            user_id=user_id,
+            closed_by=closed_by,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+
     await _try_rename_forum_topic(
         bot,
         support_chat_id,
         int(topic.topic_id),
         _topic_name_from_topic(topic, STATUS_CLOSED),
     )
+    if close_forum:
+        await _try_close_forum_topic(bot, support_chat_id, int(topic.topic_id))
     return topic
 
 
@@ -261,7 +404,15 @@ async def close_support_topic_by_user(
         return None, False
 
     was_open = _is_topic_open(topic)
-    topic = await close_support_topic(session, bot, support_chat_id, int(topic.topic_id))
+    topic = await close_support_topic(
+        session,
+        bot,
+        support_chat_id,
+        int(topic.topic_id),
+        closed_by="user",
+        actor_type="user",
+        actor_id=user_id,
+    )
     return topic, was_open
 
 
@@ -272,6 +423,9 @@ async def reopen_support_topic_by_user(
     user_id: int,
     username: Optional[str],
     full_name: Optional[str],
+    *,
+    actor_type: str = "user",
+    actor_id: Optional[int] = None,
 ) -> Tuple[object, bool]:
     repository = _repositories()
     advisory_lock = getattr(repository, "advisory_xact_lock_user", None)
@@ -281,32 +435,42 @@ async def reopen_support_topic_by_user(
     topic = await repository.get_by_user_id(session, user_id)
     if topic is None:
         forum_topic = await _create_forum_topic_for_user(
-            bot,
-            support_chat_id,
-            user_id,
-            username,
-            full_name,
+            bot, support_chat_id, user_id, username, full_name
         )
-        await refresh_topic_header_for_user(
-            bot,
-            support_chat_id,
-            int(forum_topic.message_thread_id),
-            user_id,
-            username,
-            full_name,
-        )
+        topic_id = int(forum_topic.message_thread_id)
         topic = await _call_create_support_topic(
             repository,
             session=session,
             user_id=user_id,
-            topic_id=forum_topic.message_thread_id,
+            topic_id=topic_id,
             username=username,
             full_name=full_name,
             status=STATUS_OPEN,
         )
+        ticket = await _ensure_active_ticket(
+            repository,
+            session,
+            user_id=user_id,
+            topic_id=topic_id,
+            actor_type=actor_type,
+            actor_id=actor_id or user_id,
+        )
+        header = await refresh_topic_header_for_user(
+            bot,
+            support_chat_id,
+            topic_id,
+            user_id,
+            username,
+            full_name,
+            ticket=ticket,
+        )
+        await _call_update_support_topic(
+            repository, session=session, topic=topic, header_message_id=header.message_id
+        )
         return topic, True
 
     was_open = _is_topic_open(topic)
+    old_title = _topic_name_from_topic(topic, STATUS_OPEN if was_open else STATUS_CLOSED)
     topic = await _call_update_support_topic(
         repository,
         session=session,
@@ -315,21 +479,36 @@ async def reopen_support_topic_by_user(
         full_name=full_name,
         status=None if was_open else STATUS_OPEN,
     )
+    ticket = await _ensure_active_ticket(
+        repository,
+        session,
+        user_id=user_id,
+        topic_id=int(topic.topic_id),
+        actor_type=actor_type,
+        actor_id=actor_id or user_id,
+    )
+    new_title = _topic_name_from_topic(
+        topic, getattr(ticket, "status", STATUS_OPEN) if ticket else STATUS_OPEN
+    )
+
     try:
-        await _rename_forum_topic(
-            bot,
-            support_chat_id,
-            int(topic.topic_id),
-            _topic_name_from_topic(topic, STATUS_OPEN),
-        )
         if not was_open:
-            await refresh_topic_header_for_user(
+            await _try_reopen_forum_topic(bot, support_chat_id, int(topic.topic_id))
+        if old_title != new_title or not was_open:
+            await _rename_forum_topic(bot, support_chat_id, int(topic.topic_id), new_title)
+        if not was_open:
+            header = await refresh_topic_header_for_user(
                 bot,
                 support_chat_id,
                 int(topic.topic_id),
                 user_id,
                 username,
                 full_name,
+                ticket=ticket,
+                notes=getattr(topic, "notes", None),
+            )
+            await _call_update_support_topic(
+                repository, session=session, topic=topic, header_message_id=header.message_id
             )
     except SupportTopicNotFoundError:
         topic = await _recreate_support_topic_for_user(
@@ -342,13 +521,21 @@ async def reopen_support_topic_by_user(
             username=username,
             full_name=full_name,
         )
-        await refresh_topic_header_for_user(
+        new_tid = int(topic.topic_id)
+        if ticket is not None:
+            await repository.update_ticket(session, ticket, topic_id=new_tid)
+        header = await refresh_topic_header_for_user(
             bot,
             support_chat_id,
-            int(topic.topic_id),
+            new_tid,
             user_id,
             username,
             full_name,
+            ticket=ticket,
+            notes=getattr(topic, "notes", None),
+        )
+        await _call_update_support_topic(
+            repository, session=session, topic=topic, header_message_id=header.message_id
         )
         return topic, True
 
@@ -359,6 +546,8 @@ async def close_all_support_topics(
     session: object,
     bot: Bot,
     support_chat_id: int,
+    *,
+    operator_id: Optional[int] = None,
 ) -> Tuple[int, int, Tuple[int, ...]]:
     repository = _repositories()
     get_open_topics = getattr(repository, "get_open_topics", None)
@@ -367,45 +556,92 @@ async def close_all_support_topics(
             "Cannot close all support topics: repository.get_open_topics is missing."
         )
 
-    topics = await _call_filtered(get_open_topics, session=session)
+    topics = await _call_filtered(get_open_topics, session=session, lock=True)
     closed_count = 0
     renamed_count = 0
     user_ids = []
+    close_ticket = getattr(repository, "close_active_ticket", None)
+    closed_by = f"all_end:{operator_id}" if operator_id is not None else "all_end"
+
     for topic in topics:
-        user_ids.append(int(topic.user_id))
+        uid = int(topic.user_id)
+        tid = int(topic.topic_id)
+        user_ids.append(uid)
+        await _clear_header_keyboard(
+            bot, support_chat_id, getattr(topic, "header_message_id", None)
+        )
         topic = await _call_update_support_topic(
             repository,
             session=session,
             topic=topic,
             status=STATUS_CLOSED,
         )
+        if close_ticket is not None:
+            await close_ticket(
+                session,
+                user_id=uid,
+                closed_by=closed_by,
+                actor_type="operator",
+                actor_id=operator_id,
+            )
         closed_count += 1
         renamed = await _try_rename_forum_topic(
             bot,
             support_chat_id,
-            int(topic.topic_id),
+            tid,
             _topic_name_from_topic(topic, STATUS_CLOSED),
         )
+        await _try_close_forum_topic(bot, support_chat_id, tid)
         if renamed:
             renamed_count += 1
 
     return closed_count, renamed_count, tuple(user_ids)
 
 
-def topic_close_keyboard(topic_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Закрыть обращение",
-                    callback_data=build_close_callback_data(topic_id),
-                )
-            ]
-        ]
+async def sync_topic_status_from_ticket(
+    bot: Bot,
+    support_chat_id: int,
+    topic: object,
+    ticket_status: str,
+) -> None:
+    await _try_rename_forum_topic(
+        bot,
+        support_chat_id,
+        int(topic.topic_id),
+        _topic_name_from_topic(topic, ticket_status),
     )
 
 
-def build_close_callback_data(topic_id: int) -> str:
+def topic_close_keyboard(
+    topic_id: int,
+    *,
+    ticket_id: Optional[int] = None,
+    assigned: bool = False,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    if ticket_id is not None and not assigned:
+        buttons.append(
+            InlineKeyboardButton(
+                text="Взять в работу",
+                callback_data=f"{TAKE_CALLBACK_PREFIX}{topic_id}:{ticket_id}",
+            )
+        )
+    buttons.append(
+        InlineKeyboardButton(
+            text="Закрыть обращение",
+            callback_data=build_close_callback_data(topic_id, ticket_id=ticket_id),
+        )
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
+def build_close_callback_data(
+    topic_id: int,
+    *,
+    ticket_id: Optional[int] = None,
+) -> str:
+    if ticket_id is not None:
+        return f"{CLOSE_CALLBACK_PREFIX}{topic_id}:{ticket_id}"
     return f"{CLOSE_CALLBACK_PREFIX}{topic_id}"
 
 
@@ -413,15 +649,65 @@ def is_close_ticket_callback(data: Optional[str]) -> bool:
     return bool(data and data.startswith(CLOSE_CALLBACK_PREFIX))
 
 
+def is_take_ticket_callback(data: Optional[str]) -> bool:
+    return bool(data and data.startswith(TAKE_CALLBACK_PREFIX))
+
+
 def topic_id_from_close_callback(data: str) -> int:
-    return int(data[len(CLOSE_CALLBACK_PREFIX) :])
+    payload = data[len(CLOSE_CALLBACK_PREFIX) :]
+    return int(payload.split(":", 1)[0])
+
+
+def parse_ticket_callback(data: str, prefix: str) -> Tuple[int, Optional[int]]:
+    parts = data[len(prefix) :].split(":")
+    topic_id = int(parts[0])
+    ticket_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    return topic_id, ticket_id
+
+
+async def _ensure_active_ticket(
+    repository: object,
+    session: object,
+    *,
+    user_id: int,
+    topic_id: int,
+    source_payload: Optional[str] = None,
+    actor_type: str = "user",
+    actor_id: Optional[int] = None,
+) -> Optional[object]:
+    get_active = getattr(repository, "get_active_ticket_by_user", None)
+    create_ticket = getattr(repository, "create_ticket", None)
+    if get_active is None or create_ticket is None:
+        return None
+
+    ticket = await get_active(session, user_id)
+    if ticket is not None:
+        return ticket
+
+    ticket = await create_ticket(
+        session,
+        user_id=user_id,
+        topic_id=topic_id,
+        source_payload=source_payload,
+        status=TICKET_NEW,
+    )
+    record_event = getattr(repository, "record_ticket_event", None)
+    if record_event is not None:
+        await record_event(
+            session,
+            ticket_id=int(ticket.id),
+            actor_type=actor_type,
+            actor_id=actor_id or user_id,
+            event_type="ticket_opened",
+            new_value=TICKET_NEW,
+        )
+    return ticket
 
 
 async def _call_optional_session_method(session: object, name: str) -> None:
     method = getattr(session, name, None)
     if method is None:
         return
-
     result = method()
     if isawaitable(result):
         await result
@@ -436,7 +722,6 @@ async def _call_create_support_topic(repository: object, **values: object) -> ob
     params = signature(create).parameters
     if any(param.kind == Parameter.VAR_KEYWORD for param in params.values()):
         return await create(**values)
-
     filtered = {key: value for key, value in values.items() if key in params}
     return await create(**filtered)
 
@@ -470,22 +755,19 @@ async def _call_update_support_topic(
     *,
     session: object,
     topic: object,
-    status: Optional[str] = None,
-    username: Optional[str] = None,
-    full_name: Optional[str] = None,
+    **fields: object,
 ) -> object:
     update = getattr(repository, "update_support_topic", None)
     if update is None:
         raise SupportTopicLifecycleError(
             "Cannot update support topic status: repository.update_support_topic is missing."
         )
+    filtered_fields = {k: v for k, v in fields.items() if v is not None or k in {"username", "full_name", "ban_reason", "notes"}}
     return await _call_filtered(
         update,
         session=session,
         topic=topic,
-        username=username,
-        full_name=full_name,
-        status=status,
+        **filtered_fields,
     )
 
 
@@ -516,7 +798,6 @@ async def _call_filtered(function: Callable[..., object], **values: object) -> o
     else:
         filtered = {key: value for key, value in values.items() if key in params}
         result = function(**filtered)
-
     if isawaitable(result):
         return await result
     return result
@@ -525,7 +806,6 @@ async def _call_filtered(function: Callable[..., object], **values: object) -> o
 async def _create_forum_topic(bot: Bot, message: Message, support_chat_id: int) -> object:
     if message.from_user is None:
         raise RuntimeError("Private support message must have from_user")
-
     return await _create_forum_topic_for_user(
         bot,
         support_chat_id,
@@ -590,11 +870,7 @@ async def _recreate_support_topic_for_user(
     full_name: Optional[str],
 ) -> object:
     forum_topic = await _create_forum_topic_for_user(
-        bot,
-        support_chat_id,
-        user_id,
-        username,
-        full_name,
+        bot, support_chat_id, user_id, username, full_name
     )
     return await _call_update_topic_id(
         repository,
@@ -613,7 +889,6 @@ async def _unpin_all_forum_topic_messages(
     if unpin_all is not None:
         await unpin_all(chat_id=support_chat_id, message_thread_id=topic_id)
         return
-
     raise SupportTopicLifecycleError(
         "Cannot unpin forum topic messages: Bot.unpin_all_forum_topic_messages is unavailable."
     )
@@ -630,7 +905,6 @@ async def _rename_forum_topic(
         raise SupportTopicLifecycleError(
             "Cannot rename forum topic: Bot.edit_forum_topic is unavailable."
         )
-
     try:
         await edit_forum_topic(
             chat_id=support_chat_id,
@@ -656,10 +930,58 @@ async def _try_rename_forum_topic(
     return True
 
 
+async def _try_close_forum_topic(
+    bot: Bot,
+    support_chat_id: int,
+    topic_id: int,
+) -> None:
+    close_fn = getattr(bot, "close_forum_topic", None)
+    if close_fn is None:
+        return
+    try:
+        await close_fn(chat_id=support_chat_id, message_thread_id=topic_id)
+    except TelegramBadRequest as exc:
+        if not (_is_not_modified(exc) or _is_message_thread_not_found(exc)):
+            logger.warning("Cannot close forum topic %s: %s", topic_id, exc)
+
+
+async def _try_reopen_forum_topic(
+    bot: Bot,
+    support_chat_id: int,
+    topic_id: int,
+) -> None:
+    reopen_fn = getattr(bot, "reopen_forum_topic", None)
+    if reopen_fn is None:
+        return
+    try:
+        await reopen_fn(chat_id=support_chat_id, message_thread_id=topic_id)
+    except TelegramBadRequest as exc:
+        if _is_message_thread_not_found(exc):
+            _raise_readable_topic_error(exc)
+        if not _is_not_modified(exc):
+            logger.warning("Cannot reopen forum topic %s: %s", topic_id, exc)
+
+
+async def _clear_header_keyboard(
+    bot: Bot,
+    support_chat_id: int,
+    header_message_id: Optional[int],
+) -> None:
+    if header_message_id is None:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=support_chat_id,
+            message_id=int(header_message_id),
+            reply_markup=None,
+        )
+    except TelegramBadRequest:
+        pass
+
+
 def _topic_header_text(message: Message) -> str:
     if message.from_user is None:
         raise RuntimeError("Private support message must have from_user")
-
     return _topic_header_text_for_user(
         message.from_user.id,
         message.from_user.username,
@@ -671,26 +993,42 @@ def _topic_header_text_for_user(
     user_id: int,
     username: Optional[str],
     full_name: Optional[str],
+    *,
+    ticket: Optional[object] = None,
+    notes: Optional[str] = None,
 ) -> str:
     login = f"@{username}" if username else "-"
-    return "\n".join(
-        (
-            f"ID: {user_id}",
-            f"Name: {full_name or '-'}",
-            f"Login: {login}",
-            f"Dialog: tg://user?id={user_id}",
-            f"UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
-            "",
-            "___________",
-        )
-    )
+    lines = [
+        f"ID: {user_id}",
+        f"Name: {full_name or '-'}",
+        f"Login: {login}",
+        f"Dialog: tg://user?id={user_id}",
+        f"UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    if ticket is not None:
+        tid = getattr(ticket, "id", None)
+        tstatus = getattr(ticket, "status", None)
+        assigned = getattr(ticket, "assigned_operator_id", None)
+        payload = getattr(ticket, "source_payload", None)
+        tags = getattr(ticket, "tags", None)
+        if tid is not None:
+            lines.append(f"Ticket: #{tid} ({tstatus})")
+        if assigned is not None:
+            lines.append(f"Operator: {assigned}")
+        if payload:
+            lines.append(f"Source: {payload}")
+        if tags:
+            lines.append(f"Tags: {tags}")
+    if notes:
+        lines.append(f"Note: {notes}")
+    lines.extend(["", "___________"])
+    return "\n".join(lines)
 
 
 def _topic_name(message: Message, status: str) -> str:
     user = message.from_user
     if user is None:
         return _topic_name_for_user(status, None, None, message.chat.id)
-
     return _topic_name_for_user(status, user.full_name, user.username, user.id)
 
 
@@ -721,12 +1059,7 @@ def format_topic_name(
     prefix = STATUS_PREFIXES.get(status, STATUS_PREFIXES[STATUS_OPEN])
     clean_full_name = _clean_text(full_name)
     identity = _topic_identity(username, user_id)
-
-    if clean_full_name:
-        body = f"{clean_full_name} ({identity})"
-    else:
-        body = identity
-
+    body = f"{clean_full_name} ({identity})" if clean_full_name else identity
     return f"{prefix} {body}"[:TELEGRAM_FORUM_TOPIC_NAME_LIMIT]
 
 
@@ -741,9 +1074,7 @@ def _clean_text(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     value = value.strip()
-    if not value:
-        return None
-    return value
+    return value or None
 
 
 def _repositories() -> object:
