@@ -40,60 +40,61 @@ def ensure_telegram_webhook_configured() -> None:
         )
 
 
+async def _startup_telegram(settings_obj) -> None:
+    for attempt in range(10):
+        try:
+            await validate_support_chat(bot, settings_obj.support_chat_id)
+            break
+        except TelegramRetryAfter as exc:
+            print(
+                f"Telegram FloodWait on validate_support_chat, retrying in {exc.retry_after + 2}s...",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(exc.retry_after + 2)
+        except SupportChatConfigError as exc:
+            print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
+            return
+
+    for attempt in range(10):
+        try:
+            await bot.set_webhook(
+                url=settings_obj.webhook_url,
+                secret_token=settings_obj.webhook_secret_token,
+                drop_pending_updates=settings_obj.drop_pending_updates,
+            )
+            print(f"Telegram webhook registered: {settings_obj.webhook_url}", file=sys.stderr)
+            return
+        except TelegramRetryAfter as exc:
+            print(
+                f"Telegram FloodWait on set_webhook, retrying in {exc.retry_after + 2}s...",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(exc.retry_after + 2)
+        except (TelegramUnauthorizedError, TelegramBadRequest) as exc:
+            print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         ensure_telegram_webhook_configured()
-        try:
-            await validate_support_chat(bot, settings.support_chat_id)
-        except TelegramRetryAfter as exc:
-            print(
-                f"Warning: skipping support chat validation due to Telegram FloodWait ({exc.retry_after}s).",
-                file=sys.stderr,
-            )
-
-        for attempt in range(3):
-            try:
-                await bot.set_webhook(
-                    url=settings.webhook_url,
-                    secret_token=settings.webhook_secret_token,
-                    drop_pending_updates=settings.drop_pending_updates,
-                )
-                break
-            except TelegramRetryAfter as exc:
-                if attempt == 2:
-                    raise
-                print(
-                    f"Telegram FloodWait on set_webhook, retrying in {exc.retry_after + 1}s...",
-                    file=sys.stderr,
-                )
-                await asyncio.sleep(exc.retry_after + 1)
     except WebhookStartupError as exc:
         print(f"\nWebhook startup error: {exc}\n", file=sys.stderr)
         await bot.session.close()
         raise WebhookStartupError(str(exc)) from None
-    except SupportChatConfigError as exc:
-        print(f"\nSupport chat config error: {exc}\n", file=sys.stderr)
-        await bot.session.close()
-        raise WebhookStartupError(str(exc)) from None
-    except TelegramUnauthorizedError:
-        message = "Telegram rejected BOT_TOKEN while setting webhook. Check BOT_TOKEN in .env."
-        print(f"\nWebhook startup error: {message}\n", file=sys.stderr)
-        await bot.session.close()
-        raise WebhookStartupError(message) from None
-    except TelegramBadRequest as exc:
-        message = f"Telegram rejected webhook URL {settings.webhook_url}: {exc}"
-        print(f"\nWebhook startup error: {message}\n", file=sys.stderr)
-        await bot.session.close()
-        raise WebhookStartupError(message) from None
-    except Exception:
-        await bot.session.close()
-        raise
+
+    if not settings.admin_ids:
+        print(
+            "WARNING: ADMIN_IDS is empty — any member of SUPPORT_CHAT_ID can act as operator.",
+            file=sys.stderr,
+        )
+
+    startup_task = asyncio.create_task(_startup_telegram(settings))
     try:
-        if not settings.admin_ids:
-            print("WARNING: ADMIN_IDS is empty — any member of SUPPORT_CHAT_ID can act as operator.", file=sys.stderr)
         yield
     finally:
+        startup_task.cancel()
         await close_redis()
         await bot.session.close()
 
