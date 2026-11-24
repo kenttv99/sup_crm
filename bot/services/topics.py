@@ -13,6 +13,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.errors import SupportChatConfigError, SupportTopicLifecycleError, SupportTopicNotFoundError
+from config.messages import get_messages
 from database import config as database_config
 
 logger = logging.getLogger(__name__)
@@ -28,13 +29,7 @@ TICKET_CLOSED = "closed"
 CLOSE_CALLBACK_PREFIX = "close_ticket:"
 TAKE_CALLBACK_PREFIX = "take_ticket:"
 
-STATUS_PREFIXES = {
-    STATUS_OPEN: "\U0001f7e2",
-    TICKET_NEW: "\U0001f7e2",
-    TICKET_IN_PROGRESS: "\U0001f7e1",
-    TICKET_WAITING_USER: "\U0001f535",
-    STATUS_CLOSED: "\U0001f534",
-}
+STATUS_PREFIXES = get_messages()["topic_status_prefixes"]
 TELEGRAM_FORUM_TOPIC_NAME_LIMIT = 128
 
 
@@ -618,17 +613,18 @@ def topic_close_keyboard(
     ticket_id: Optional[int] = None,
     assigned: bool = False,
 ) -> InlineKeyboardMarkup:
+    btns_cfg = get_messages()["buttons"]
     buttons = []
     if ticket_id is not None and not assigned:
         buttons.append(
             InlineKeyboardButton(
-                text="Взять в работу",
+                text=btns_cfg["take_ticket"],
                 callback_data=f"{TAKE_CALLBACK_PREFIX}{topic_id}:{ticket_id}",
             )
         )
     buttons.append(
         InlineKeyboardButton(
-            text="Закрыть обращение",
+            text=btns_cfg["close_ticket"],
             callback_data=build_close_callback_data(topic_id, ticket_id=ticket_id),
         )
     )
@@ -1021,7 +1017,7 @@ def _topic_header_text_for_user(
             lines.append(f"Tags: {tags}")
     if notes:
         lines.append(f"Note: {notes}")
-    lines.extend(["", "___________"])
+    lines.extend(["", get_messages()["topic_header_footer"]])
     return "\n".join(lines)
 
 

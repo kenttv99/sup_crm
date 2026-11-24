@@ -40,18 +40,15 @@ from bot.services.topics import (
     topic_close_keyboard,
     topic_id_from_close_callback,
 )
+from config.messages import get_messages, msg
 from config.settings import Settings
 from database import repositories
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="support")
-TICKET_CLOSED_MESSAGE = (
-    "Обращение закрыто. Следующее сообщение пользователя откроет новое обращение."
-)
-USER_TICKET_CLOSED_MESSAGE = (
-    "Обращение закрыто. Если текущий вопрос не решен, обращение можно переоткрыть по кнопке ниже."
-)
+TICKET_CLOSED_MESSAGE = msg("ticket_closed_topic")
+USER_TICKET_CLOSED_MESSAGE = msg("ticket_closed_user")
 REOPEN_TICKET_CALLBACK_DATA = "reopen_ticket"
 CSAT_CALLBACK_PREFIX = "csat:"
 INTERNAL_NOTE_PREFIX = "!"
@@ -91,7 +88,7 @@ async def close_private_support_topic_command(
         await send_user_ticket_closed_message(
             bot,
             message.from_user.id,
-            "Активное обращение не найдено. При необходимости откройте новое обращение.",
+            msg("ticket_closed_not_found"),
         )
         return
 
@@ -100,7 +97,7 @@ async def close_private_support_topic_command(
             bot,
             settings,
             int(topic.topic_id),
-            "Пользователь закрыл обращение командой /end.",
+            msg("user_closed_topic"),
         )
     await send_user_ticket_closed_message(
         bot,
@@ -121,7 +118,7 @@ async def forward_private_message(
 
     user_id = message.from_user.id  # type: ignore[union-attr]
     if not await check_rate_limit(user_id):
-        await message.answer("Слишком много сообщений. Пожалуйста, подождите несколько секунд.")
+        await message.answer(msg("rate_limit_exceeded"))
         return
 
     async with open_database_session() as session:
@@ -141,7 +138,7 @@ async def forward_private_message(
     except TelegramBadRequest as exc:
         if not is_message_thread_not_found(exc):
             logger.warning("Failed to copy private message from %s: %s", user_id, exc)
-            await message.answer("Не удалось доставить сообщение в поддержку. Попробуйте позже.")
+            await message.answer(msg("delivery_failed_user"))
             return
         topic = await recreate_private_support_topic(message, bot, settings, topic)
         copied = await copy_private_message_to_topic(
@@ -215,7 +212,7 @@ async def reopen_private_support_topic_callback(
         bot,
         settings,
         int(topic.topic_id),
-        "Пользователь переоткрыл обращение по кнопке.",
+        msg("user_reopened_topic"),
     )
     await send_welcome_message(callback.message)
 
@@ -841,7 +838,7 @@ async def send_macro_command(
             await message.answer("Topic не найден в базе.")
             return
         if not is_open_topic(topic):
-            await message.answer("Обращение закрыто. Сообщение не доставлено пользователю.")
+            await message.answer(msg("operator_closed_reply"))
             return
 
         sent = await _deliver_to_user(
@@ -891,7 +888,7 @@ async def forward_support_topic_message(
             )
             return
         if not is_open_topic(topic):
-            await message.reply("Обращение закрыто. Сообщение не доставлено пользователю.")
+            await message.reply(msg("operator_closed_reply"))
             return
 
         sent = await _deliver_to_user(bot, settings, topic, message)
@@ -999,14 +996,8 @@ async def send_welcome_message(message: Message) -> None:
 
 
 def welcome_text(username: Optional[str]) -> str:
-    mention = f"@{escape(username)}" if username else "тебя"
-    return (
-        f"Рады видеть тебя, {mention} 👋\n"
-        "\n"
-        "Опиши подробно свой вопрос или задачу, к диалогу подключится первый освободившийся специалист.\n"
-        "\n"
-        "*<i>Диалоги проводятся только в этом боте, все остальные - мошенники.</i>"
-    )
+    mention = f"@{escape(username)}" if username else msg("welcome_default_mention")
+    return msg("welcome_text", mention=mention)
 
 
 def is_slash_command(message: Message) -> bool:
@@ -1166,7 +1157,7 @@ def reopen_ticket_keyboard(*, ticket_id: Optional[int] = None) -> InlineKeyboard
     rows = [
         [
             InlineKeyboardButton(
-                text="Переоткрыть обращение",
+                text=get_messages()["buttons"]["reopen_ticket"],
                 callback_data=reopen_cb,
             )
         ]
@@ -1236,7 +1227,7 @@ async def _deliver_to_user(
             reply_to_message_id=reply_to_id,
         )
     except TelegramForbiddenError:
-        await message.reply("Пользователь заблокировал бота. Обращение закрыто.")
+        await message.reply(msg("user_blocked_bot"))
         async with open_database_session() as close_session:
             await close_support_topic(
                 close_session,
