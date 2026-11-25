@@ -330,8 +330,10 @@ async def close_support_topic_callback(
     bot: Bot,
     settings: Settings,
 ) -> None:
-    if not _can_operate_in_support_chat(callback.from_user.id, callback.message, settings):
-        await callback.answer("Недостаточно прав или неверный чат.", show_alert=True)
+    denial = _operator_denial_reason(callback.from_user.id, callback.message, settings)
+    if denial is not None:
+        logger.warning("Close ticket denied for %s: %s", callback.from_user.id, denial)
+        await callback.answer(f"Доступ запрещён: {denial}.", show_alert=True)
         return
 
     topic_id, expected_ticket_id = parse_ticket_callback(
@@ -376,8 +378,10 @@ async def take_support_topic_callback(
     bot: Bot,
     settings: Settings,
 ) -> None:
-    if not _can_operate_in_support_chat(callback.from_user.id, callback.message, settings):
-        await callback.answer("Недостаточно прав или неверный чат.", show_alert=True)
+    denial = _operator_denial_reason(callback.from_user.id, callback.message, settings)
+    if denial is not None:
+        logger.warning("Take ticket denied for %s: %s", callback.from_user.id, denial)
+        await callback.answer(f"Доступ запрещён: {denial}.", show_alert=True)
         return
 
     topic_id, expected_ticket_id = parse_ticket_callback(
@@ -983,16 +987,23 @@ def _validate_operator_command(
     return is_allowed_operator(message.from_user.id, settings)
 
 
-def _can_operate_in_support_chat(
+def _operator_denial_reason(
     user_id: int,
-    msg: object,
+    message_obj: object,
     settings: Settings,
-) -> bool:
+) -> Optional[str]:
+    """Explain why an operator button is rejected instead of a generic alert."""
     if not is_allowed_operator(user_id, settings):
-        return False
-    if not isinstance(msg, Message):
-        return False
-    return msg.chat.id == settings.support_chat_id
+        return f"ваш ID {user_id} отсутствует в ADMIN_IDS"
+    chat_id = getattr(getattr(message_obj, "chat", None), "id", None)
+    if chat_id is None:
+        return "сообщение с кнопкой недоступно"
+    if chat_id != settings.support_chat_id:
+        return (
+            f"кнопка нажата в чате {chat_id}, "
+            f"а SUPPORT_CHAT_ID={settings.support_chat_id}"
+        )
+    return None
 
 
 async def send_welcome_message(message: Message) -> None:
