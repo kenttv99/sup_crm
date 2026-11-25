@@ -225,7 +225,11 @@ async def reopen_private_support_topic_callback(
 
 
 @router.callback_query(lambda cb: bool(cb.data and cb.data.startswith(CSAT_CALLBACK_PREFIX)))
-async def csat_rating_callback(callback: CallbackQuery) -> None:
+async def csat_rating_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    settings: Settings,
+) -> None:
     if callback.from_user.is_bot or not callback.data:
         await callback.answer()
         return
@@ -255,9 +259,27 @@ async def csat_rating_callback(callback: CallbackQuery) -> None:
             event_type="csat_rated",
             new_value=str(score),
         )
+        topic_id = int(ticket.topic_id)
 
     await callback.answer(msg("csat_thanks", score=score))
+    await send_topic_status_message(
+        bot,
+        settings,
+        topic_id,
+        msg(
+            "csat_received",
+            score=score,
+            ticket_id=ticket_id,
+            **operator_card(callback.from_user),
+        ),
+    )
     if isinstance(callback.message, Message):
+        await react_to_message(
+            bot,
+            callback.message.chat.id,
+            callback.message.message_id,
+            msg("reaction_csat"),
+        )
         try:
             await callback.message.edit_reply_markup(
                 reply_markup=reopen_ticket_keyboard(ticket_id=ticket_id)
@@ -1282,20 +1304,36 @@ async def _deliver_to_user(
         return None
 
 
-async def mark_user_message_delivered(bot: Bot, message: Message) -> None:
-    """Confirm delivery to the client with a reaction on their message."""
+async def react_to_message(
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    emoji: str,
+) -> None:
+    """Set a reaction, ignoring channels where reactions are unavailable."""
     try:
         await bot.set_message_reaction(
-            chat_id=message.chat.id,
-            message_id=message.message_id,
-            reaction=[ReactionTypeEmoji(emoji=msg("reaction_delivered"))],
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji=emoji)],
         )
     except (TelegramBadRequest, TelegramForbiddenError) as exc:
         logger.info(
-            "Cannot set delivery reaction on message %s: %s",
-            message.message_id,
+            "Cannot set reaction %s on message %s: %s",
+            emoji,
+            message_id,
             exc,
         )
+
+
+async def mark_user_message_delivered(bot: Bot, message: Message) -> None:
+    """Confirm delivery to the client with a reaction on their message."""
+    await react_to_message(
+        bot,
+        message.chat.id,
+        message.message_id,
+        msg("reaction_delivered"),
+    )
 
 
 async def _on_user_message_forwarded(

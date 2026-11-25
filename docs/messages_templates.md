@@ -21,6 +21,8 @@
 | `user_blocked_bot` | клиент заблокировал бота | — |
 | `operator_took_ticket` | сообщение в топик при взятии обращения в работу | `{name}`, `{login}`, `{user_id}` |
 | `reaction_delivered` | реакция на сообщение клиента после доставки в топик | — |
+| `reaction_csat` | реакция на сообщение с оценкой после CSAT | — |
+| `csat_received` | уведомление в топик об оценке клиента | `{score}`, `{ticket_id}`, `{name}`, `{login}`, `{user_id}` |
 | `csat_thanks` | уведомление после оценки | `{score}` |
 | `csat_already_rated` / `csat_not_found` | ошибки CSAT (пока захардкожены в хендлере) | — |
 | `buttons.*` | inline-кнопки шапки и сообщения о закрытии | — |
