@@ -332,8 +332,12 @@ async def close_support_topic_callback(
 ) -> None:
     denial = _operator_denial_reason(callback.from_user.id, callback.message, settings)
     if denial is not None:
-        logger.warning("Close ticket denied for %s: %s", callback.from_user.id, denial)
-        await callback.answer(f"Доступ запрещён: {denial}.", show_alert=True)
+        logger.warning(
+            "Close ticket denied for %s: %s",
+            callback.from_user.id,
+            denial.replace("\n", " "),
+        )
+        await callback.answer(denial, show_alert=True)
         return
 
     topic_id, expected_ticket_id = parse_ticket_callback(
@@ -380,8 +384,12 @@ async def take_support_topic_callback(
 ) -> None:
     denial = _operator_denial_reason(callback.from_user.id, callback.message, settings)
     if denial is not None:
-        logger.warning("Take ticket denied for %s: %s", callback.from_user.id, denial)
-        await callback.answer(f"Доступ запрещён: {denial}.", show_alert=True)
+        logger.warning(
+            "Take ticket denied for %s: %s",
+            callback.from_user.id,
+            denial.replace("\n", " "),
+        )
+        await callback.answer(denial, show_alert=True)
         return
 
     topic_id, expected_ticket_id = parse_ticket_callback(
@@ -994,14 +1002,17 @@ def _operator_denial_reason(
 ) -> Optional[str]:
     """Explain why an operator button is rejected instead of a generic alert."""
     if not is_allowed_operator(user_id, settings):
-        return f"ваш ID {user_id} отсутствует в ADMIN_IDS"
+        return (
+            f"У вашего ID {user_id} нет необходимых разрешений.\n"
+            "Добавьте этот ID в ADMIN_IDS в .env и перезапустите бота."
+        )
     chat_id = getattr(getattr(message_obj, "chat", None), "id", None)
     if chat_id is None:
-        return "сообщение с кнопкой недоступно"
+        return "Сообщение с кнопкой недоступно."
     if chat_id != settings.support_chat_id:
         return (
-            f"кнопка нажата в чате {chat_id}, "
-            f"а SUPPORT_CHAT_ID={settings.support_chat_id}"
+            f"Кнопка нажата в чате {chat_id}, "
+            f"а в SUPPORT_CHAT_ID указан {settings.support_chat_id}."
         )
     return None
 
