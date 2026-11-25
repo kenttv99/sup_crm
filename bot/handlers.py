@@ -425,7 +425,7 @@ async def take_support_topic_callback(
         bot,
         settings,
         topic_id,
-        f"Оператор {callback.from_user.id} взял обращение в работу.",
+        msg("operator_took_ticket", **operator_card(callback.from_user)),
     )
 
 
@@ -974,6 +974,16 @@ def should_ignore_support_message(message: Message, settings: Settings) -> bool:
         )
         return True
     return is_service_message(message)
+
+
+def operator_card(user: object) -> dict:
+    """Operator identity for topic notifications: nick, login, id."""
+    username = getattr(user, "username", None)
+    return {
+        "name": getattr(user, "full_name", None) or "-",
+        "login": f"@{username}" if username else "-",
+        "user_id": getattr(user, "id", None),
+    }
 
 
 def is_allowed_operator(user_id: int, settings: Settings) -> bool:

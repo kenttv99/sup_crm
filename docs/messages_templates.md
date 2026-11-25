@@ -19,6 +19,7 @@
 | `user_closed_topic` | уведомление операторам о `/end` | — |
 | `operator_closed_reply` | оператор пишет в закрытое обращение | — |
 | `user_blocked_bot` | клиент заблокировал бота | — |
+| `operator_took_ticket` | сообщение в топик при взятии обращения в работу | `{name}`, `{login}`, `{user_id}` |
 | `reaction_delivered` | реакция на сообщение клиента после доставки в топик | — |
 | `csat_thanks` | уведомление после оценки | `{score}` |
 | `csat_already_rated` / `csat_not_found` | ошибки CSAT (пока захардкожены в хендлере) | — |
