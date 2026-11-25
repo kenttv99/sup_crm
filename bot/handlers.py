@@ -9,7 +9,13 @@ from typing import Iterable, Optional
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ReactionTypeEmoji,
+)
 
 from bot.services.redis_cache import (
     check_rate_limit,
@@ -151,6 +157,7 @@ async def forward_private_message(
         settings.support_chat_id,
         copied.message_id,
     )
+    await mark_user_message_delivered(bot, message)
     await _on_user_message_forwarded(bot, settings, user_id, topic)
 
 
@@ -1241,6 +1248,22 @@ async def _deliver_to_user(
     except TelegramBadRequest as exc:
         await message.reply(f"Не удалось доставить сообщение пользователю: {exc}")
         return None
+
+
+async def mark_user_message_delivered(bot: Bot, message: Message) -> None:
+    """Confirm delivery to the client with a reaction on their message."""
+    try:
+        await bot.set_message_reaction(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            reaction=[ReactionTypeEmoji(emoji=msg("reaction_delivered"))],
+        )
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        logger.info(
+            "Cannot set delivery reaction on message %s: %s",
+            message.message_id,
+            exc,
+        )
 
 
 async def _on_user_message_forwarded(
