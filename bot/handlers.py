@@ -996,7 +996,7 @@ async def send_welcome_message(message: Message) -> None:
 
 
 def welcome_text(username: Optional[str]) -> str:
-    mention = f"@{escape(username)}" if username else msg("welcome_default_mention")
+    mention = f", @{escape(username)}" if username else "!"
     return msg("welcome_text", mention=mention)
 
 
