@@ -249,7 +249,7 @@ async def csat_rating_callback(callback: CallbackQuery) -> None:
             new_value=str(score),
         )
 
-    await callback.answer(f"Спасибо за оценку: {score}/5!")
+    await callback.answer(msg("csat_thanks", score=score))
     if isinstance(callback.message, Message):
         try:
             await callback.message.edit_reply_markup(
